@@ -156,6 +156,30 @@ A line you already put in perspective in Aegisub keeps it. Its `\frx`, `\fry`, `
 `\fscx` and `\fscy` become the starting pose, the values from the tab are added on top, and this holds
 when you export the tracking alone too.
 
+*Attachment plane* lays four corners on the surface that carries the text, even far from the tracked
+area. The plane follows the tracking and tracks nothing itself. With *Place*, drag its corners onto the
+surface, and the text stays where it is. A grid extends the plane to its horizon so you can judge the
+perspective, and the thick side of the frame is the top. *Lay the text on the plane* gives the text
+that perspective, the way the perspective tool in Aegisub does with its four-corner frame. The
+*Straightened view* then shows the surface flat and from the front. With a well placed plane the
+surface looks straight there and stays still during playback.
+
+*Correct here* is for a text that slips on a frame although the area follows well, which happens when
+the artwork is redrawn in the middle of a shot. On that frame, put the corners back on the same
+surface. The text follows, and the correction holds for the frames after it, going away from the start
+frame, until the next correction. The corrected frames are listed under the buttons, with *Delete this
+one*. The attachment plane needs *Area* mode.
+
+*Next problem ▶* looks for the place to correct. It runs from the frame on screen, going away from the
+start frame, and stops at the first frame where the surface of the plane no longer looks like its last
+reference, meaning the start frame or the last correction. There it offers up to four coloured frames,
+*Tracking as it is*, *Plane realigned*, *Around the text* and *Wider search*, each with a likeness
+percentage. Click a frame to take it as the correction, and its corners can still be adjusted.
+*Tracking as it is* approves the frame without changing anything, which makes it the new reference.
+*Search here* makes the same offers on the frame on screen. Treat these frames as starting points. When
+the artwork was redrawn, none of them has to be exact, and on an object that swings the search may
+stop at every new pose.
+
 libass renders the text preview through ffmpeg, during playback as well, so you see what Aegisub will
 show. The font may differ if the style is unknown.
 
@@ -227,12 +251,15 @@ Keys do nothing while you are typing in a field.
 | What happens | What helps |
 |---|---|
 | It crosses the picture very fast | Draw the area on a frame where the object is whole, ideally one where it stands still, set *Search* to *Large* and press *◀ All ▶*. The slider goes up to 600 px. Past 96 px its label turns red, since tracking gets slower and is more likely to latch onto a look-alike. On the frame where it has barely entered the picture, too little of it is visible to track |
+| It snaps or swings to a new place between two frames | Use *Area* with *Realign on the start frame* ticked. The moment the track lets go, the tracker looks for the object up to half the area's diagonal away, turned by 40° at most and close to its previous size. A board that swings also changes perspective, so tick *Perspective*. Draw the area on the artwork or the lettering, because the rim of a board gets in the way here: its thickness and its shadow change with the angle. When nothing looks enough like the start frame, the frames are marked estimated |
+| The text shakes although the area is steady | It sits too far from the area, and a tiny error on the area grows with distance. On a board 900 px tall, a text placed at the top moved by 0.5 px with the area right below it, by 2.4 px with the area 480 px lower and by 7.5 px with the area at the very bottom. Draw the area on what lies right next to the text and leave the rim of the object out of it. When the text is far from the area, an orange warning shows in the Text tab and in the export summary, including for Aegisub lines exported as tracking only |
+| The text slips after a swing although the area follows well | The artwork was redrawn: its outline and its lettering did not move together, and a text placed far from the area follows what is inside the area. In the Text tab, use *Attachment plane*: place the plane on the surface under the text, go to the first frame after the swing and put its corners back with *Correct here*. The other way is to split the line in Aegisub at the frame of the swing, place the text again on the first frame of each half, then track each half on its own, drawing the area on that first frame |
 | The object pops in suddenly | Go to a frame where it shows clearly, draw the area and use *◀ Track* to run backwards in time |
 | Flat colour, no detail | Use *Area* and draw it on the edges of the object or just around them. The tracker lines up the outlines with those of the start frame, so texture is not needed. The *Automatic* channel (the default) picks the colour mix where the area stands out best, which keeps an object trackable when it is as bright as the background. *View*, beside *Channel*, shows the video in greyscale as the tracker sees it |
 | It grows a lot or leaves the picture | In *Area* mode the tracker picks new points in the part still visible once too many are lost, and carries on with the same motion. An area that is almost entirely off screen keeps going on its momentum |
 | It squashes, stretches or is seen at an angle | Tick *Shear* or *Perspective* before tracking. Otherwise the track lets go as soon as the object deforms, and the closing message says so |
 | Its surface bends | *Mesh* tracks a grid of points one by one, and the selection bends with the surface |
-| It goes behind something | With *Area* mode and *Realign on the start frame* ticked, the tracker carries the path on (movement and rotation) and picks the object up when it shows again. After more than a few lost frames it searches the whole picture, near the expected orientation and size. An identical object passing over the target can fool that recovery |
+| It goes behind something | With *Area* mode and *Realign on the start frame* ticked, the tracker carries the path on (movement and rotation) and picks the object up when it shows again. While the object is lost it searches the whole picture, near the expected orientation and size. An identical object passing over the target can fool that recovery |
 | Something slides over it | Set *Covering*, described below |
 | It fades in or out | Tick *Opacity* under *Other tracking* before tracking, from a frame where the area shows clearly. The selection holds its place once it turns invisible, and *Opacity (fades)* gets ticked for the mask and the text, which receive `\alpha` frame by frame. Each of them can also set that box in its own list |
 | The track drifts little by little | *Realign on the start frame* (ticked by default, in the Search section) lines every frame up with the one where tracking began, so small errors cannot add up. Untick it if the object truly changes its look along the way. *Refine* does the same realignment afterwards on the tracked frames of the range, for instance after you moved the selection by hand |
@@ -291,7 +318,8 @@ Several entries of the *View* menu help you judge a track:
   smoothly, as many on each side as *Neighbours pulled along* says (6 by default).
 - *Straightened view* opens a window showing the object from the front and standing still on every
   frame. Movement in that window during playback means the track needs fixing. In the Text tab, a click
-  in that window places the text straight.
+  in that window places the text straight. Once an attachment plane is placed, it straightens the
+  surface of that plane.
 - The *Magnifier* enlarges the video around the pointer for placing a point to the pixel.
 - *Hide overlays* (the H key) leaves only the video, to compare with the untouched picture.
 - *Loop playback over the range* sends playback back to the start of the range.

@@ -347,6 +347,10 @@ impl Template {
         (cur, Match { h: *h, score: cos(&all), weakest, gain: (all[1] / all[2]).sqrt() })
     }
 
+    pub fn score(&self, b: &[Gray], h: &H) -> f32 {
+        self.look(b, h, 0, 0).1.score
+    }
+
     pub fn align(&self, b: &[Gray], start: &H, m: &Motion, top: usize) -> Match {
         let free = m.shear || m.perspective;
         let on = [m.translation, m.translation, m.scale || free, m.rotation || free, free, free, m.perspective, m.perspective];
@@ -767,31 +771,31 @@ pub fn run(
         if fading && matches!(&tracked, Ok((f, inliers, _)) if inliers * 2 < f.pts.len()) {
             tracked = Err(String::new());
         }
+        let drift = |h: &H, from: &H| zone.iter().map(|v| dist(apply(h, *v), apply(from, *v))).fold(0f32, f32::max);
+        let trusted = matches!(&tracked, Ok((f, inliers, _)) if inliers * 2 >= f.pts.len() && drift(&f.h, &pred) <= 0.5 * (drift(&pred, &prev.h) + p.pattern as f32));
         let mut found = near.filter(|_| direct);
         let mut far = false;
         if let (Some(t), false) = (tpl, direct) {
-            let others: Vec<H> = if lost >= 5 {
-                t.search(&b, &pred, &p.motion, 40. + 2. * lost as f32)
-            } else if lost > 0 {
-                vec![]
-            } else {
-                tracked.iter().map(|t| t.0.h).chain([pred]).collect()
-            };
+            let others: Vec<H> = if lost > 0 { t.search(&b, &pred, &p.motion, 40. + 2. * lost as f32) } else { tracked.iter().map(|t| t.0.h).chain([pred]).collect() };
             let grown = |h: &H| {
                 let (from, to): (Vec<P>, Vec<P>) = zone.iter().map(|v| (apply(&pred, *v), apply(h, *v))).unzip();
                 fit(&SIMILARITY, &from, &to, &vec![true; from.len()]).map_or(9., |m| (m[0].hypot(m[3]).ln().abs()) as f32)
             };
-            let reach = (lost + 2) as f32 * (2. * dist(apply(&guess, centre(&prev)), centre(&prev)) + p.pattern as f32);
-            let fits = |f: &Match| lost == 0 || (back(f) && f.score >= 0.85 * base && f.gain >= 0.5 && grown(&f.h) <= 0.1 + 0.005 * lost as f32 && dist(apply(&f.h, c0), apply(&pred, c0)) <= reach);
+            let size = bbox(&zone.iter().map(|v| apply(&pred, *v)).collect::<Vec<_>>());
+            let reach = ((lost + 2) as f32 * (2. * dist(apply(&guess, centre(&prev)), centre(&prev)) + p.pattern as f32)).max((size[2] - size[0]).hypot(size[3] - size[1]) / 2.);
+            let again = |f: &Match| back(f) && f.score >= 0.85 * base && f.gain >= 0.5 && grown(&f.h) <= 0.1 + 0.005 * lost as f32 && dist(apply(&f.h, c0), apply(&pred, c0)) <= reach;
+            let fits = |f: &Match| lost == 0 || again(f);
             let best = par(&others, |h| t.align(&b, h, &p.motion, 9)).into_iter().filter(fits).chain(near.filter(|_| lost == 0)).max_by(|x, y| x.score.total_cmp(&y.score));
             found = best.filter(|f| lost > 0 || f.score >= if since == u32::MAX { 0.5 } else { 0.8 * base });
             far = lost > 0 && found.is_some();
-            if found.is_none() && lost == 0 {
+            if found.is_none() && lost == 0 && !trusted {
+                found = par(&t.search(&b, &pred, &p.motion, 40.), |h| t.align(&b, h, &p.motion, 9)).into_iter().filter(again).max_by(|x, y| x.score.total_cmp(&y.score));
+                far = found.is_some();
+            }
+            if found.is_none() && lost == 0 && (tracked.is_ok() || prev.score < 0.8) {
                 found = near.filter(|f| f.score >= 0.6 * base);
             }
         }
-        let drift = |h: &H, from: &H| zone.iter().map(|v| dist(apply(h, *v), apply(from, *v))).fold(0f32, f32::max);
-        let trusted = matches!(&tracked, Ok((f, inliers, _)) if inliers * 2 >= f.pts.len() && drift(&f.h, &pred) <= 0.5 * (drift(&pred, &prev.h) + p.pattern as f32));
         if let Some(Match { h, score, .. }) = found {
             let sure = score >= 0.8 * base;
             let mut f = FrameData { h, pts: refs.iter().map(|q| apply(&h, *q)).collect(), opacity: prev.opacity, guessed: false, score: (score / base).min(1.) };
@@ -1500,6 +1504,30 @@ mod tests {
         assert_eq!(out.len(), 8);
         let (got, want) = (out[7].map(&ref_pts, false, [100., 90.]), apply(&hs[7], [100., 90.]));
         assert!(dist(got, want) < 4., "{got:?} au lieu de {want:?}");
+    }
+
+    #[test]
+    fn a_template_scores_the_right_pose_above_a_shifted_one() {
+        let shape = [[130., 100.], [190., 100.], [190., 140.], [130., 140.]];
+        let (a, b) = (pyramid(frame(drawing, &IDENT, 1.), 24., 10), pyramid(frame(drawing, &translation(9., 4.), 1.), 24., 10));
+        let t = Template::new(&a, &shape, 10., &[]);
+        assert!(t.score(&b, &translation(9., 4.)) > 0.95 && t.score(&b, &IDENT) < 0.8, "{} / {}", t.score(&b, &translation(9., 4.)), t.score(&b, &IDENT));
+    }
+
+    #[test]
+    fn a_zone_follows_a_sudden_jump_both_ways() {
+        let turned = mul(&translation(186., 108.), &mul(&[0.2f64.cos(), -(0.2f64.sin()), 0., 0.2f64.sin(), 0.2f64.cos(), 0., 0., 0., 1.], &translation(-160., -120.)));
+        let shape = [[130., 100.], [190., 100.], [190., 140.], [130., 140.]];
+        let p = Params { realign: true, search: 6., ..params(ALL, false) };
+        for hs in [[IDENT, IDENT, IDENT, turned, turned, turned], [turned, turned, turned, IDENT, IDENT, IDENT]] {
+            let (first, back) = (frame(drawing, &hs[0], 1.), inv(&hs[0]));
+            let zone = shape.map(|v| apply(&hs[0], v));
+            let out = track(drawing, &hs, &[1.; 6], detect(&first, &zone), &zone, &p);
+            for (f, h) in out.iter().zip(&hs) {
+                let off = zone.iter().map(|v| dist(apply(&f.h, *v), apply(&mul(h, &back), *v))).fold(0f32, f32::max);
+                assert!(!f.guessed && off < 0.5, "estimée : {}, écart {off} px", f.guessed);
+            }
+        }
     }
 
     fn wander(i: usize) -> H {

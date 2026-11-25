@@ -145,6 +145,8 @@ pub struct Export<'a> {
     pub text_opacity: bool,
     pub mask_follow: Follow,
     pub text_follow: Follow,
+    pub glued: &'a [Option<FrameData>],
+    pub seat: crate::track::H,
     pub merge: bool,
     pub group: bool,
     pub cut: Cut,
@@ -506,12 +508,13 @@ impl Export<'_> {
         let mut out = vec![];
         for l in lines {
             let own = line_pos(&l.text).filter(|_| self.own_pos).map(|(x, y)| [(x / self.scale[0]) as f32, (y / self.scale[1]) as f32]);
-            let anchor = own.unwrap_or(self.anchor);
+            let anchor = crate::track::apply(&self.seat, own.unwrap_or(self.anchor));
             let mut base = Base::read(l);
             let [tx, ty, turn, size] = self.text_pose;
             (base.tx, base.ty, base.fr, base.fx, base.fy) = (base.tx + tx, base.ty + ty, base.fr + turn, base.fx * size / 100., base.fy * size / 100.);
             let mut poses: Vec<Pose> = vec![];
             for (i, start, end, f) in self.each().filter(|(i, ..)| (l.first..l.end).contains(i) && self.cover(*i) != Cover::Hidden) {
+                let f = self.glued.get(i).and_then(Option::as_ref).unwrap_or(f);
                 let (mut v, org) = self.pose(f, anchor, &base);
                 if let Some(last) = poses.last() {
                     for c in 4..7 {
@@ -834,11 +837,25 @@ mod tests {
     use crate::track::{mul, translation, IDENT};
 
     fn export<'a>(frames: &'a [Option<FrameData>], times: &'a [i64], mask: &'a [P]) -> Export<'a> {
-        Export { frames, ref_pts: &[], warp: false, times, scale: [2., 2.], size: [1280., 720.], mask, anchor: [100., 50.], own_pos: false, add_text: false, color: [0x11, 0x22, 0x33], tints: vec![], gradients: &[], bands: 4, picture: None, pin: false, blur: 0., mask_opacity: false, text_opacity: false, mask_follow: Follow::ALL, text_follow: Follow::ALL, merge: true, group: false, cut: Cut::None, grow: 0., twin: false, mask_layer: 0, text_layer: 0, text_pose: [0., 0., 0., 100.], covers: &[] }
+        Export { frames, ref_pts: &[], warp: false, times, scale: [2., 2.], size: [1280., 720.], mask, anchor: [100., 50.], own_pos: false, add_text: false, color: [0x11, 0x22, 0x33], tints: vec![], gradients: &[], bands: 4, picture: None, pin: false, blur: 0., mask_opacity: false, text_opacity: false, mask_follow: Follow::ALL, text_follow: Follow::ALL, glued: &[], seat: IDENT, merge: true, group: false, cut: Cut::None, grow: 0., twin: false, mask_layer: 0, text_layer: 0, text_pose: [0., 0., 0., 100.], covers: &[] }
     }
 
     fn fd(h: [f64; 9]) -> Option<FrameData> {
         Some(FrameData { h, pts: vec![], opacity: 0.5, guessed: false, score: 1. })
+    }
+
+    #[test]
+    fn glued_frames_move_the_text_and_leave_the_mask() {
+        let frames = [fd(IDENT), fd(IDENT)];
+        let glued = [None, fd(translation(10., 5.))];
+        let shape = [[0., 0.], [10., 0.], [10., 10.]];
+        let mut e = export(&frames, &[0, 40, 80], &shape);
+        e.glued = &glued;
+        let text = e.text_lines(&[SrcLine::standalone("T", "Default")]);
+        assert!(text[0].text.starts_with("{\\pos(200,100)") && text[1].text.starts_with("{\\pos(220,110)"), "{} / {}", text[0].text, text[1].text);
+        assert_eq!(e.mask_lines(0).len(), 1);
+        e.seat = translation(-10., -5.);
+        assert!(e.text_lines(&[SrcLine::standalone("T", "Default")])[1].text.starts_with("{\\pos(200,100)"));
     }
 
     #[test]

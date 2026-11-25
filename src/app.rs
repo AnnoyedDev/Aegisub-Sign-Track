@@ -84,6 +84,13 @@ struct Worker {
     what: &'static str,
 }
 
+struct Hunt {
+    key: usize,
+    held: Option<(track::Template, track::H, f32)>,
+    at: i64,
+    step: i64,
+}
+
 struct Snap {
     zone: bool,
     shape: Vec<P>,
@@ -97,6 +104,8 @@ struct Snap {
     mix: [f32; 3],
     frames: Vec<Option<FrameData>>,
     manual: Marks,
+    plane: Vec<P>,
+    glue: Vec<(usize, track::H)>,
 }
 
 type Marks = std::collections::BTreeSet<usize>;
@@ -180,6 +189,9 @@ struct Object {
     mask_layer: i32,
     text_layer: i32,
     pose: [f32; 4],
+    plane: Vec<P>,
+    glue: Vec<(usize, track::H)>,
+    lay: bool,
     ease: [u32; 3],
     grow: f32,
     twin: bool,
@@ -246,6 +258,51 @@ impl Object {
         self.anchor.unwrap_or_else(|| export::centroid(self.mask_poly()))
     }
 
+    fn apart(&self, spots: &[P]) -> Option<f32> {
+        if !self.zone || self.shape.len() < 3 {
+            return None;
+        }
+        let (lo, hi) = bounds(&self.shape);
+        let d = spots.iter().map(|a| (lo[0] - a[0]).max(a[0] - hi[0]).max(0.).hypot((lo[1] - a[1]).max(a[1] - hi[1]).max(0.))).fold(0f32, f32::max);
+        (d > (hi[0] - lo[0]).max(hi[1] - lo[1]) / 2.).then_some(d)
+    }
+
+    fn glue_key(&self, i: usize) -> Option<&(usize, track::H)> {
+        let r = self.ref_frame;
+        let found = if i >= r { self.glue.iter().filter(|g| (r..=i).contains(&g.0)).max_by_key(|g| g.0) } else { self.glue.iter().filter(|g| (i..r).contains(&g.0)).min_by_key(|g| g.0) };
+        found.filter(|_| !self.warp)
+    }
+
+    fn glue_at(&self, i: usize) -> track::H {
+        self.glue_key(i).map_or(track::IDENT, |g| g.1)
+    }
+
+    fn level(&self) -> Option<(track::H, [f32; 4])> {
+        let p = &self.plane;
+        if p.len() != 4 || self.warp {
+            return None;
+        }
+        let d = |a: P, b: P| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let (w, h, c) = ((d(p[0], p[1]) + d(p[3], p[2])) / 4., (d(p[0], p[3]) + d(p[1], p[2])) / 4., export::centroid(p));
+        let b = [c[0] - w, c[1] - h, c[0] + w, c[1] + h];
+        Some((track::fit(&moves(true, true, true), &[[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]], p, &[true; 4])?, b))
+    }
+
+    fn stance(&self, i: usize) -> track::H {
+        track::mul(&self.glue_at(i), &self.level().filter(|_| self.lay).map_or(track::IDENT, |l| l.0))
+    }
+
+    fn seat(&self) -> track::H {
+        self.level().filter(|_| self.lay).map_or(track::IDENT, |l| track::inv(&l.0))
+    }
+
+    fn glued(&self, shown: &[Option<FrameData>]) -> Vec<Option<FrameData>> {
+        if self.warp || (self.glue.is_empty() && self.seat() == track::IDENT) {
+            return vec![];
+        }
+        shown.iter().enumerate().map(|(i, f)| f.clone().map(|f| FrameData { h: track::mul(&f.h, &self.stance(i)), ..f })).collect()
+    }
+
     fn new() -> Object {
         Object {
             name: String::new(),
@@ -260,6 +317,9 @@ impl Object {
             mask_layer: 0,
             text_layer: 0,
             pose: [0., 0., 0., 100.],
+            plane: vec![],
+            glue: vec![],
+            lay: false,
             ease: [0; 3],
             grow: 0.,
             twin: false,
@@ -504,6 +564,10 @@ pub struct App {
     halts: Vec<(usize, i32)>,
     reshaped: f64,
     hush: bool,
+    attach: u8,
+    hunt: Option<Hunt>,
+    offers: Vec<(&'static str, Color32, track::H, f32)>,
+    offers_at: usize,
     lost: Option<usize>,
     see: bool,
     tex_mark: u64,
@@ -636,6 +700,10 @@ impl App {
             halts: vec![],
             reshaped: 0.,
             hush: false,
+            attach: 0,
+            hunt: None,
+            offers: vec![],
+            offers_at: 0,
             lost: None,
             see: false,
             tex_mark: 0,
@@ -767,7 +835,7 @@ impl App {
     }
 
     fn snap(&self) -> Snap {
-        Snap { zone: self.o.zone, shape: self.o.shape.clone(), hole: self.o.hole.clone(), mask: self.o.mask.clone(), anchor: self.o.anchor, ref_pts: self.o.ref_pts.clone(), opa: self.o.opa.clone(), warp: self.o.warp, ref_frame: self.o.ref_frame, mix: self.o.mix, frames: self.o.frames.clone(), manual: self.o.manual.clone() }
+        Snap { zone: self.o.zone, shape: self.o.shape.clone(), hole: self.o.hole.clone(), mask: self.o.mask.clone(), anchor: self.o.anchor, ref_pts: self.o.ref_pts.clone(), opa: self.o.opa.clone(), warp: self.o.warp, ref_frame: self.o.ref_frame, mix: self.o.mix, frames: self.o.frames.clone(), manual: self.o.manual.clone(), plane: self.o.plane.clone(), glue: self.o.glue.clone() }
     }
 
     fn checkpoint(&mut self) {
@@ -791,6 +859,7 @@ impl App {
         self.o.hole = s.hole;
         self.o.mix = s.mix;
         self.o.manual = s.manual;
+        (self.o.plane, self.o.glue) = (s.plane, s.glue);
         self.dirty = true;
         self.status = if back { t!("Action annulée (Ctrl+Maj+Z pour la rétablir).", "Action undone (Ctrl+Shift+Z to redo it).").into() } else { t!("Action rétablie.", "Action redone.").into() };
     }
@@ -850,6 +919,7 @@ impl App {
     fn clear_track(&mut self) {
         self.o.frames.iter_mut().for_each(|f| *f = None);
         self.o.manual.clear();
+        self.o.glue.clear();
         self.dirty = true;
     }
 
@@ -989,11 +1059,11 @@ impl App {
             Some(j) => vec![j.lines[0].with_text(&styled(&o.text))],
             None => vec![SrcLine::standalone(&styled(&o.text), &o.style_name)],
         };
-        let fd = self.nearest(frame).and_then(|i| self.shown[i].clone());
-        let one = [Some(fd.unwrap_or(FrameData { h: track::IDENT, pts: o.ref_pts.clone(), opacity: 1., guessed: false, score: 1. }))];
+        let fd = self.nearest(frame).and_then(|i| self.shown[i].clone().map(|f| FrameData { h: track::mul(&f.h, &o.stance(i)), ..f }));
+        let one = [Some(fd.unwrap_or(FrameData { h: o.stance(frame), pts: o.ref_pts.clone(), opacity: 1., guessed: false, score: 1. }))];
         let hides = [o.covers.get(frame).copied().unwrap_or(Cover::Clear)];
         let mut e = self.exporter(o, &one, clip, false);
-        (e.times, e.group, e.covers) = (&times, false, &hides);
+        (e.times, e.group, e.covers, e.seat) = (&times, false, &hides, o.seat());
         export::clipboard(&e.text_lines(&lines), &lines, 0)
     }
 
@@ -1307,6 +1377,7 @@ impl App {
             text += &format!("forme={}\ntrou={}\nmasque={}\npoints={}\nancre={}\npipette={}\nopa={}\n", dots(&o.shape), dots(&o.hole), dots(&o.mask), dots(&o.ref_pts), dots(o.anchor.as_slice()), dots(o.color_spot.as_slice()), opa.join(";"));
             text += &format!("warp={}\ncache.actif={}\ntexte.actif={}\ntexte.importe={}\nref={}\nmix={}\ntexte.saisi={}\n", o.warp, o.mask_on, o.text_on, o.import, o.ref_frame, o.mix.map(|v| v.to_string()).join(","), o.text);
             text += &format!("nom={}\nmanuel={}\npose={}\n", o.name, o.manual.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), o.pose.map(|v| v.to_string()).join(","));
+            text += &format!("plan={}\ncouche={}\ncolle={}\n", dots(&o.plane), o.lay, o.glue.iter().map(|(k, h)| format!("{k} {}", h.map(|v| v.to_string()).join(" "))).collect::<Vec<_>>().join(";"));
             for (n, f) in o.frames.iter().enumerate() {
                 if let Some(f) = f {
                     text += &format!("f={n} {} {} {} {} {}\n", f.h.map(|v| v.to_string()).join(" "), f.opacity, f.guessed, f.score, dots(&f.pts));
@@ -1337,6 +1408,8 @@ impl App {
             o.mix = numbers(line("mix")).try_into().unwrap_or(o.mix);
             (o.name, o.manual) = (line("nom").into(), line("manuel").split(',').filter_map(|v| v.parse().ok()).collect());
             o.pose = numbers(line("pose")).try_into().unwrap_or(o.pose);
+            (o.plane, o.lay) = (undots(line("plan")), line("couche") == "true");
+            o.glue = line("colle").split(';').filter_map(|g| Some((g.split(' ').next()?.parse().ok()?, g.split(' ').skip(1).filter_map(|v| v.parse().ok()).collect::<Vec<f64>>().try_into().ok()?))).collect();
             for row in part.lines().filter_map(|l| l.strip_prefix("f=")) {
                 let v: Vec<&str> = row.split(' ').collect();
                 let h: Vec<f64> = v.iter().skip(1).take(9).filter_map(|x| x.parse().ok()).collect();
@@ -1356,6 +1429,110 @@ impl App {
             let dir = self.ffmpeg_dir.as_ref().map_or(String::new(), |d| format!("ffmpeg={}\n", d.display()));
             let _ = std::fs::write(file, format!("{dir}langue={}\nmaj={}\n", if lang::english() { "en" } else { "fr" }, self.check as u8));
         }
+    }
+
+    fn far(&self, o: &Object) -> Option<String> {
+        let spots: Vec<P> = match (&self.job, &self.clip) {
+            _ if o.text_on => vec![o.anchor_pt()].into_iter().filter(|_| o.text_follow.translation).collect(),
+            (Some(j), Some(clip)) if !o.mask_on => j.lines.iter().filter_map(|l| export::line_pos(&l.text)).map(|(x, y)| [(x * clip.w as f64 / self.res[0]) as f32, (y * clip.h as f64 / self.res[1]) as f32]).collect(),
+            _ => vec![],
+        };
+        let d = o.apart(&spots)?;
+        Some(tf!("Le texte est à {:.0} px de la zone trackée. Le tracking n'est juste que là où se trouve la zone : si la surface ne bouge pas pareil sous le texte (pli, perspective qui change, dessin refait), le texte sera mal placé et tremblera. Tracez la zone là où est le texte.", "The text is {:.0} px away from the tracked area. Tracking is only right where the area is: if the surface moves differently under the text (a fold, a changing perspective, redrawn artwork), the text will be misplaced and will shake. Draw the area where the text is.", d))
+    }
+
+    fn pyr(&self, i: usize) -> Option<Vec<Gray>> {
+        let clip = self.clip.as_ref()?;
+        Some(track::pyramid(Gray::from_rgb(&clip.rgb(i).ok()?, clip.w, clip.h, Channel::Luma), 24., 10))
+    }
+
+    fn laid(&self, i: usize) -> Option<track::H> {
+        Some(track::mul(&self.shown.get(i)?.as_ref()?.h, &self.o.glue_at(i)))
+    }
+
+    fn sighting(&self, k: usize) -> Option<(track::Template, Vec<Gray>, track::H, f32)> {
+        if self.o.plane.len() != 4 || self.o.warp {
+            return None;
+        }
+        let r = self.o.glue_key(k).map_or(self.o.ref_frame, |g| g.0);
+        let (m, a) = (self.laid(r)?, self.pyr(r)?);
+        let tpl = track::Template::new(&a, &self.o.plane.iter().map(|v| track::apply(&m, *v)).collect::<Vec<_>>(), 10., &[]);
+        let base = tpl.score(&a, &track::IDENT);
+        Some((tpl, a, m, base))
+    }
+
+    fn propose(&mut self) {
+        let k = self.cur;
+        (self.offers, self.offers_at) = (vec![], k);
+        let (Some((tpl, a, m, base)), Some(b), Some(now), Some(h)) = (self.sighting(k), self.pyr(k), self.laid(k), self.shown.get(k).and_then(|f| Some(f.as_ref()?.h))) else {
+            self.status = t!("Pour chercher, il faut un plan d'attache posé et une frame trackée en mode Zone.", "Searching needs an attachment plane placed and a frame tracked in Area mode.").into();
+            return;
+        };
+        let all = moves(true, true, true);
+        let start = track::mul(&now, &track::inv(&m));
+        let quad: Vec<P> = self.o.plane.iter().map(|v| track::apply(&m, *v)).collect();
+        let c = export::centroid(&quad);
+        let reach = quad.iter().map(|v| (v[0] - c[0]).hypot(v[1] - c[1])).fold(0f32, f32::max);
+        let p = track::apply(&m, self.o.anchor_pt());
+        let s = (reach / 3.).max(40.);
+        let near = track::Template::new(&a, &[[p[0] - s, p[1] - s], [p[0] + s, p[1] - s], [p[0] + s, p[1] + s], [p[0] - s, p[1] + s]], 10., &[]);
+        let wide = tpl.search(&b, &start, &all, 20.).iter().map(|g| tpl.align(&b, g, &all, 9)).filter(|f| { let (q, w) = (track::apply(&f.h, c), track::apply(&start, c)); (q[0] - w[0]).hypot(q[1] - w[1]) <= reach }).max_by(|x, y| x.score.total_cmp(&y.score));
+        let found = [
+            (t!("Suivi tel quel", "Tracking as it is"), Color32::from_rgb(255, 70, 70), Some(start)),
+            (t!("Plan recalé", "Plane realigned"), Color32::from_rgb(255, 210, 0), Some(tpl.align(&b, &start, &all, 9).h)),
+            (t!("Autour du texte", "Around the text"), Color32::from_rgb(70, 230, 110), Some(near.align(&b, &start, &moves(true, false, false), 9).h)),
+            (t!("Recherche élargie", "Wider search"), Color32::from_rgb(90, 170, 255), wide.map(|f| f.h)),
+        ];
+        let mut seen: Vec<Vec<P>> = vec![];
+        for (name, ink, g) in found {
+            let Some(g) = g else { continue };
+            let at: Vec<P> = quad.iter().map(|v| track::apply(&g, *v)).collect();
+            if at.iter().all(|v| v[0].is_finite() && v[1].is_finite()) && seen.iter().all(|o| o.iter().zip(&at).any(|(x, y)| (x[0] - y[0]).hypot(x[1] - y[1]) > 1.5)) {
+                self.offers.push((name, ink, track::mul(&track::inv(&h), &track::mul(&g, &m)), tpl.score(&b, &g) / base.max(1e-6)));
+                seen.push(at);
+            }
+        }
+        self.attach = 2;
+    }
+
+    fn hunt_start(&mut self) {
+        if self.hunt.take().is_some() {
+            self.status = t!("Recherche arrêtée.", "Search stopped.").into();
+        } else if self.o.plane.len() != 4 || self.o.warp {
+            self.status = t!("Pour chercher, il faut un plan d'attache posé et une frame trackée en mode Zone.", "Searching needs an attachment plane placed and a frame tracked in Area mode.").into();
+        } else {
+            let step = if self.cur >= self.o.ref_frame { 1 } else { -1 };
+            self.hunt = Some(Hunt { key: usize::MAX, held: None, at: self.cur as i64 + step, step });
+        }
+    }
+
+    fn hunt_step(&mut self, ctx: &egui::Context) {
+        let Some(mut h) = self.hunt.take() else { return };
+        for _ in 0..3 {
+            let i = h.at as usize;
+            if h.at < 0 || !self.shown.get(i).is_some_and(Option::is_some) {
+                self.status = t!("Aucun problème trouvé jusqu'au bout du tracking.", "No problem found up to the end of the tracking.").into();
+                return;
+            }
+            let key = self.o.glue_key(i).map_or(self.o.ref_frame, |g| g.0);
+            if key != h.key || h.held.is_none() {
+                (h.key, h.held) = (key, self.sighting(i).map(|(t, _, m, base)| (t, track::inv(&m), base)));
+            }
+            let (Some((t, back, base)), Some(b), Some(now)) = (&h.held, self.pyr(i), self.laid(i)) else {
+                self.status = t!("Lecture de la vidéo impossible pendant la recherche.", "Cannot read the video during the search.").into();
+                return;
+            };
+            if i != key && t.align(&b, &track::mul(&now, back), &moves(true, true, true), 1).score < 0.85 * base {
+                self.cur = i;
+                self.propose();
+                self.status = tf!("Frame {} : le plan ne ressemble plus à sa référence. Prenez un des cadres proposés ou replacez les coins.", "Frame {}: the plane no longer looks like its reference. Take one of the offered frames or put the corners back.", i + 1);
+                return;
+            }
+            h.at += h.step;
+        }
+        self.status = tf!("Recherche d'un problème : frame {}...", "Looking for a problem: frame {}...", h.at + 1);
+        self.hunt = Some(h);
+        ctx.request_repaint();
     }
 
     fn halt_dialog(&mut self, ctx: &egui::Context) {
@@ -1535,6 +1712,8 @@ impl App {
             mask_layer: o.mask_layer,
             text_layer: o.text_layer,
             text_pose: o.pose.map(f64::from),
+            glued: &[],
+            seat: track::IDENT,
             covers: &o.covers,
         }
     }
@@ -1551,7 +1730,9 @@ impl App {
         if !bare {
             lines.iter_mut().for_each(|l| l.text = o.style.apply(&l.text));
         }
-        let e = self.exporter(o, shown, clip, bare);
+        let glued = o.glued(shown);
+        let mut e = self.exporter(o, shown, clip, bare);
+        (e.glued, e.seat) = (&glued, o.seat());
         let mut out = vec![];
         if o.mask_on {
             if e.mask.len() < 3 {
@@ -1646,6 +1827,7 @@ impl App {
         }
         let Some(r) = &self.recap else { return };
         let imports = send && self.all().any(|o| o.tracked() && o.import && o.text_on);
+        let alerts: Vec<String> = self.all().enumerate().filter(|(_, o)| o.tracked()).filter_map(|(i, o)| Some(tf!("Objet {} : {}", "Object {}: {}", i + 1, self.far(o)?))).collect();
         let (mut choice, mut options) = (None, [self.group, self.merge, self.comment, self.spread]);
         egui::Window::new(if send { t!("Envoyer à Aegisub", "Send to Aegisub") } else { t!("Copier pour Aegisub", "Copy for Aegisub") }).id(egui::Id::unique("recap")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0., 0.]).show(ctx, |ui| {
             ui.set_min_width(520.);
@@ -1663,6 +1845,9 @@ impl App {
                             ui.end_row();
                         }
                     });
+                    for alert in &alerts {
+                        ui.colored_label(Color32::from_rgb(235, 150, 50), alert);
+                    }
                     ui.separator();
                     ui.strong(tf!("Total : {} lignes, environ {} Ko ajoutés au script", "Total: {} lines, about {} KB added to the script", r.total, r.bytes.div_ceil(1024)));
                     for note in &r.notes {
@@ -2392,6 +2577,9 @@ impl App {
             .on_hover_text(t!("Nom du style Aegisub donné aux lignes copiées", "Name of the Aegisub style given to the copied lines"));
         }
         ui.weak(t!("Clic ou glisser sur la vidéo : placer le texte.\nAlt+molette : taille. Maj+molette : rotation.", "Click or drag on the video: place the text.\nAlt+wheel: size. Shift+wheel: rotation."));
+        if let Some(alert) = self.far(&self.o) {
+            ui.colored_label(Color32::from_rgb(235, 150, 50), alert);
+        }
         ui.label(t!("Pose de départ", "Starting pose")).on_hover_text(t!("Pour un texte posé sur une surface déjà vue de biais : réglez ici son inclinaison sur la frame où vous le placez. Le tracking part de cette pose et la fait évoluer.\nCes valeurs s'ajoutent aux \\frx, \\fry, \\frz et à la taille de la ligne.", "For text laid on a surface that is already seen at an angle: set its tilt here on the frame where you place it. Tracking starts from that pose and carries it on.\nThese values are added to the line's \\frx, \\fry, \\frz and size."));
         ui.horizontal(|ui| {
             for (i, name, hint) in [(0, "X ", t!("Bascule vers l'avant ou l'arrière (\\frx)", "Tips forwards or backwards (\\frx)")), (1, "Y ", t!("Pivote vers la gauche ou la droite (\\fry)", "Swings to the left or to the right (\\fry)")), (2, "Z ", t!("Tourne à plat (\\frz). Maj+molette sur la vidéo.", "Turns flat (\\frz). Shift+wheel on the video."))] {
@@ -2404,6 +2592,63 @@ impl App {
                 self.o.pose = [0., 0., 0., 100.];
             }
         });
+        ui.label(t!("Plan d'attache", "Attachment plane")).on_hover_text(t!("Quatre coins posés sur la surface qui porte le texte. Le plan suit le tracking sans rien tracker. Quand le texte glisse sur une frame, replacez-y les coins : le texte suit, et la correction vaut jusqu'à la suivante en s'éloignant de la frame de départ.", "Four corners laid on the surface that carries the text. The plane follows the tracking and tracks nothing itself. When the text slips on a frame, put the corners back there: the text follows, and the correction holds until the next one, going away from the start frame."));
+        ui.horizontal(|ui| {
+            for (v, name, hint) in [(1, t!("Poser", "Place"), t!("Glissez les coins sur la surface. Le texte ne bouge pas.", "Drag the corners onto the surface. The text does not move.")), (2, t!("Corriger ici", "Correct here"), t!("Replacez les coins sur la même surface, sur cette frame. Le texte suit.", "Put the corners back on the same surface, on this frame. The text follows."))] {
+                if ui.selectable_label(self.attach == v, name).on_hover_text(hint).clicked() {
+                    self.attach = if self.attach == v { 0 } else { v };
+                    if self.attach > 0 && self.o.plane.len() != 4 {
+                        let a = self.o.anchor_pt();
+                        let b = self.o.shape.iter().chain([&a]).fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, v| [b[0].min(v[0]), b[1].min(v[1]), b[2].max(v[0]), b[3].max(v[1])]);
+                        self.o.plane = vec![[b[0] - 30., b[1] - 30.], [b[2] + 30., b[1] - 30.], [b[2] + 30., b[3] + 30.], [b[0] - 30., b[3] + 30.]];
+                    }
+                }
+            }
+            if ui.add_enabled(!self.o.plane.is_empty(), egui::Button::new(t!("Retirer", "Remove"))).clicked() {
+                self.checkpoint();
+                (self.o.plane, self.o.glue, self.o.lay, self.attach) = (vec![], vec![], false, 0);
+            }
+        });
+        if self.offers_at != self.cur {
+            self.offers.clear();
+        }
+        ui.add_enabled_ui(self.o.plane.len() == 4, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button(if self.hunt.is_some() { t!("Arrêter", "Stop") } else { t!("Problème suivant ▶", "Next problem ▶") }).on_hover_text(t!("Avance depuis cette frame, en s'éloignant de la frame de départ, jusqu'à celle où le plan ne ressemble plus à sa dernière référence (frame de départ ou dernière correction), puis y propose des cadres.", "Runs from this frame, going away from the start frame, to the one where the plane no longer looks like its last reference (start frame or last correction), then offers frames there.")).clicked() {
+                    self.hunt_start();
+                }
+                if ui.button(t!("Chercher ici", "Search here")).on_hover_text(t!("Cherche sur cette frame où est passée la surface du plan, à partir du tracking et de la dernière référence, et propose plusieurs cadres.", "Looks on this frame for where the surface of the plane went, from the tracking and the last reference, and offers several frames.")).clicked() {
+                    self.propose();
+                }
+            });
+        });
+        if !self.offers.is_empty() {
+            ui.weak(t!("Cliquez sur un cadre pour le prendre comme correction ici, puis ajustez ses coins si besoin. « Suivi tel quel » valide la frame sans rien changer. Le pourcentage dit à quel point la surface ressemble à la référence.", "Click a frame to take it as the correction here, then adjust its corners if needed. \"Tracking as it is\" approves the frame without changing anything. The percentage says how much the surface looks like the reference."));
+        }
+        for (name, ink, d, score) in self.offers.clone() {
+            if ui.add(egui::Button::new(egui::RichText::new(format!("■ {name} ({:.0} %)", 100. * score)).color(ink))).clicked() {
+                self.checkpoint();
+                self.o.glue.retain(|g| g.0 != self.cur);
+                self.o.glue.push((self.cur, d));
+            }
+        }
+        ui.add_enabled_ui(self.o.plane.len() == 4, |ui| {
+            if ui.checkbox(&mut self.o.lay, t!("Coucher le texte sur le plan", "Lay the text on the plane")).on_hover_text(t!("Le texte prend la perspective du plan, et son haut se tourne vers le côté épais du cadre. Coche aussi tout ce que le texte suit du tracking.", "The text takes the perspective of the plane, and its top turns towards the thick side of the frame. Also ticks everything the text follows from the tracking.")).changed() && self.o.lay {
+                self.o.text_follow = Follow::ALL;
+            }
+        });
+        ui.checkbox(&mut self.flat, t!("Vue redressée", "Straightened view")).on_hover_text(t!("Avec un plan posé, montre sa surface à plat et de face. Un plan bien posé y donne une surface droite, qui ne bouge pas pendant la lecture.", "With a plane placed, shows its surface flat and from the front. A well placed plane gives a straight surface there, which stays still during playback."));
+        if !self.o.glue.is_empty() {
+            ui.horizontal(|ui| {
+                let mut at: Vec<usize> = self.o.glue.iter().map(|g| g.0 + 1).collect();
+                at.sort();
+                ui.weak(tf!("Corrections : frames {}", "Corrections: frames {}", at.iter().map(|k| k.to_string()).collect::<Vec<_>>().join(", ")));
+                if ui.add_enabled(self.o.glue.iter().any(|g| g.0 == self.cur), egui::Button::new(t!("Effacer celle-ci", "Delete this one")).small()).clicked() {
+                    self.checkpoint();
+                    self.o.glue.retain(|g| g.0 != self.cur);
+                }
+            });
+        }
         let cuts = [(Cut::None, t!("Pas de découpe", "No clipping")), (Cut::Inside, t!("Visible seulement dans le cache (\\clip)", "Visible only inside the mask (\\clip)")), (Cut::Outside, t!("Caché par le cache (\\iclip)", "Hidden by the mask (\\iclip)"))];
         egui::ComboBox::from_id_salt("cut").selected_text(cuts.iter().find(|c| c.0 == self.o.cut).map_or("", |c| c.1)).show_ui(ui, |ui| {
             for (c, name) in cuts {
@@ -2722,6 +2967,7 @@ impl App {
         let ghost = near.is_some() && near != Some(self.cur);
         let view = View { fd: near.and_then(|i| self.shown[i].clone()), ref_pts: self.o.ref_pts.clone(), warp: self.o.warp };
         let tracked = near.is_some();
+        let stick = near.map_or(track::IDENT, |i| self.o.glue_at(i));
         let zoom = self.zoom;
         let held = export::centroid(&self.o.shape);
         let slip = view.map(held);
@@ -2754,15 +3000,15 @@ impl App {
             let active: Vec<P> = match self.mode {
                 Mode::Track => self.o.shape.iter().map(|v| view.map(*v)).collect(),
                 Mode::Mask => self.o.mask.iter().map(|v| view.place(mask_c, mask_fol, *v)).collect(),
-                Mode::Text => vec![],
+                Mode::Text => self.o.plane.iter().filter(|_| self.attach > 0).map(|v| view.map(track::apply(&stick, *v))).collect(),
             };
             let pointer = resp.interact_pointer_pos();
-            if self.mode == Mode::Text && (resp.clicked() || resp.drag_started_by(PointerButton::Primary)) {
+            if self.mode == Mode::Text && self.attach == 0 && (resp.clicked() || resp.drag_started_by(PointerButton::Primary)) {
                 self.checkpoint();
                 self.o.text_on = true;
             }
-            if let Some(pos) = pointer.filter(|_| self.mode == Mode::Text && (resp.clicked() || resp.dragged_by(PointerButton::Primary))) {
-                self.o.anchor = Some(if text_fol.translation { view.unmap(img(pos)) } else { img(pos) });
+            if let Some(pos) = pointer.filter(|_| self.mode == Mode::Text && self.attach == 0 && (resp.clicked() || resp.dragged_by(PointerButton::Primary))) {
+                self.o.anchor = Some(if text_fol.translation { track::apply(&track::inv(&stick), view.unmap(img(pos))) } else { img(pos) });
             }
             let hit = |pos: Pos2| active.iter().position(|v| scr(*v).distance(pos) < HIT);
             let trail: Vec<(usize, Pos2)> = if self.path && self.mode == Mode::Track { self.shown.iter().enumerate().filter_map(|(i, f)| Some((i, scr(f.as_ref()?.map(&self.o.ref_pts, self.o.warp, held))))).collect() } else { vec![] };
@@ -2885,6 +3131,39 @@ impl App {
                 }
             }
         }
+        if self.mode == Mode::Text && self.offers_at == self.cur {
+            for (_, ink, d, _) in &self.offers {
+                painter.add(Shape::closed_line(self.o.plane.iter().map(|v| scr(view.map(track::apply(d, *v)))).collect(), Stroke::new(2., *ink)));
+            }
+        }
+        if self.mode == Mode::Text && self.attach > 0 {
+            let ink = Color32::from_rgb(200, 130, 255);
+            let plane: Vec<Pos2> = self.o.plane.iter().map(|v| scr(view.map(track::apply(&stick, *v)))).collect();
+            if let Some((g, b)) = self.o.level() {
+                let t = track::mul(&view.fd.as_ref().map_or(track::IDENT, |f| f.h), &track::mul(&stick, &g));
+                let far = |x: f32, y: f32| -> [f64; 3] { std::array::from_fn(|r| t[3 * r] * x as f64 + t[3 * r + 1] * y as f64 + t[3 * r + 2]) };
+                let floor = 0.06 * far((b[0] + b[2]) / 2., (b[1] + b[3]) / 2.)[2];
+                let cut = |a: [f64; 3], z: [f64; 3]| -> [f64; 3] { std::array::from_fn(|r| a[r] + (z[r] - a[r]) * (floor - a[2]) / (z[2] - a[2])) };
+                let faint = Stroke::new(1., Color32::from_rgba_unmultiplied(200, 130, 255, 70));
+                let (w, h) = (b[2] - b[0], b[3] - b[1]);
+                for k in -24..=28 {
+                    let (x, y) = (b[0] + w * k as f32 / 4., b[1] + h * k as f32 / 4.);
+                    for (a, z) in [(far(x, b[1] - 6. * h), far(x, b[3] + 6. * h)), (far(b[0] - 6. * w, y), far(b[2] + 6. * w, y))] {
+                        if a[2] >= floor || z[2] >= floor {
+                            let (a, z) = (if a[2] < floor { cut(a, z) } else { a }, if z[2] < floor { cut(z, a) } else { z });
+                            painter.line_segment([scr([(a[0] / a[2]) as f32, (a[1] / a[2]) as f32]), scr([(z[0] / z[2]) as f32, (z[1] / z[2]) as f32])], faint);
+                        }
+                    }
+                }
+            }
+            for v in &plane {
+                painter.circle_filled(*v, 4., ink);
+            }
+            if plane.len() >= 2 {
+                painter.line_segment([plane[0], plane[1]], Stroke::new(3.5, ink));
+            }
+            painter.add(Shape::closed_line(plane, Stroke::new(1.5, ink)));
+        }
         for (i, o) in self.all().enumerate().filter(|(i, _)| *i != self.sel) {
             if let Some(f) = o.frames.get(self.cur).and_then(Option::as_ref) {
                 let outline: Vec<Pos2> = o.shape.iter().map(|v| scr(f.map(&o.ref_pts, o.warp, *v))).collect();
@@ -2952,9 +3231,9 @@ impl App {
         let mut stuck = None;
         if self.o.text_on && (tracked || self.o.anchor.is_some() || !self.o.shape.is_empty()) {
             let (a, fol) = (self.anchor_pt(), self.o.text_follow);
-            let (pos, grow, rot) = match &view.fd {
+            let (pos, grow, rot) = match view.fd.clone().map(|f| FrameData { h: track::mul(&f.h, &stick), ..f }) {
                 Some(f) => {
-                    let (p, sx, sy, r) = export::local_motion(f, &view.ref_pts, view.warp, a, 1.);
+                    let (p, sx, sy, r) = export::local_motion(&f, &view.ref_pts, view.warp, a, 1.);
                     (if fol.translation { p } else { a }, if fol.scale { (sx * sy).sqrt() as f32 } else { 1. }, if fol.rotation { r as f32 } else { 0. })
                 }
                 None => (a, 1., 0.),
@@ -3010,7 +3289,11 @@ impl App {
     }
 
     fn flat_view(&mut self, ctx: &egui::Context, view: &View, size: Vec2, stuck: Option<(egui::TextureId, Rect)>) {
-        let (lo, hi) = bounds(if self.o.shape.is_empty() { &self.o.ref_pts } else { &self.o.shape });
+        let level = self.o.level();
+        let (lo, hi) = level.map_or(bounds(if self.o.shape.is_empty() { &self.o.ref_pts } else { &self.o.shape }), |l| ([l.1[0], l.1[1]], [l.1[2], l.1[3]]));
+        let lie = level.map_or(track::IDENT, |l| l.0);
+        let to = track::mul(&self.nearest(self.cur).map_or(track::IDENT, |i| self.o.glue_at(i)), &lie);
+        let (from, sit) = (track::inv(&to), track::inv(&lie));
         let mut open = true;
         egui::Window::new(t!("Vue redressée", "Straightened view")).id(egui::Id::unique("redressee")).open(&mut open).resizable(false).show(ctx, |ui| {
             let Some(frame) = self.tex.as_ref().map(|t| t.1.id()).filter(|_| hi[0] > lo[0] && hi[1] > lo[1]) else {
@@ -3036,14 +3319,14 @@ impl App {
             painter.rect_filled(resp.rect, 0., Color32::BLACK);
             painter.add(sheet(frame, 16, &|u, v| {
                 let p = [lo[0] + span.x * u, lo[1] + span.y * v];
-                let q = view.map(p);
+                let q = view.map(track::apply(&to, p));
                 (win(p), Pos2::new(q[0] / size.x, q[1] / size.y))
             }));
             if let Some((id, at)) = stuck {
-                painter.add(sheet(id, 8, &|u, v| (win(view.unmap([at.left() + at.width() * u, at.top() + at.height() * v])), Pos2::new(u, v))));
+                painter.add(sheet(id, 8, &|u, v| (win(track::apply(&from, view.unmap([at.left() + at.width() * u, at.top() + at.height() * v]))), Pos2::new(u, v))));
             }
             if self.o.zone && self.o.shape.len() >= 3 {
-                painter.add(Shape::closed_line(self.o.shape.iter().map(|v| win(*v)).collect(), Stroke::new(1.5, ACCENT)));
+                painter.add(Shape::closed_line(self.o.shape.iter().map(|v| win(track::apply(&from, *v))).collect(), Stroke::new(1.5, ACCENT)));
             }
             if self.mode == Mode::Text && self.worker.is_none() {
                 if resp.clicked() || resp.drag_started_by(PointerButton::Primary) {
@@ -3052,12 +3335,12 @@ impl App {
                 }
                 if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.clicked() || resp.dragged_by(PointerButton::Primary)) {
                     let p = [lo[0] + (pos.x - resp.rect.left()) / k, lo[1] + (pos.y - resp.rect.top()) / k];
-                    self.o.anchor = Some(if self.o.text_follow.translation { p } else { view.map(p) });
+                    self.o.anchor = Some(if self.o.text_follow.translation { track::apply(&lie, p) } else { view.map(track::apply(&to, p)) });
                 }
             }
             if self.o.text_on {
                 let a = self.anchor_pt();
-                let c = win(if self.o.text_follow.translation { a } else { view.unmap(a) });
+                let c = win(if self.o.text_follow.translation { track::apply(&sit, a) } else { track::apply(&from, view.unmap(a)) });
                 painter.line_segment([c - Vec2::X * 8., c + Vec2::X * 8.], Stroke::new(1.5, Color32::from_rgb(255, 90, 90)));
                 painter.line_segment([c - Vec2::Y * 8., c + Vec2::Y * 8.], Stroke::new(1.5, Color32::from_rgb(255, 90, 90)));
             }
@@ -3138,7 +3421,24 @@ impl App {
             }
             (Mode::Mask, Drag::Vertex(i)) => moved(&mut self.o.mask[i]),
             (Mode::Mask, Drag::Whole) => self.o.mask.iter_mut().for_each(moved),
-            (Mode::Text, _) => {}
+            (Mode::Text, _) => {
+                let stick = self.o.glue_at(self.cur);
+                let mut q: Vec<P> = self.o.plane.iter().map(|v| view.map(track::apply(&stick, *v))).collect();
+                match d {
+                    Drag::Vertex(i) => q[i] = add(q[i], delta),
+                    _ => q.iter_mut().for_each(|v| *v = add(*v, delta)),
+                }
+                let back: Vec<P> = q.iter().map(|v| view.unmap(*v)).collect();
+                if self.attach == 1 {
+                    let undo = track::inv(&stick);
+                    self.o.plane = back.iter().map(|v| track::apply(&undo, *v)).collect();
+                } else if self.o.warp || !self.o.frames.get(self.cur).is_some_and(Option::is_some) {
+                    self.status = t!("Corriger le plan demande une frame trackée en mode Zone.", "Correcting the plane needs a frame tracked in Area mode.").into();
+                } else if let Some(h) = track::fit(&moves(true, true, true), &self.o.plane, &back, &[true; 4]) {
+                    self.o.glue.retain(|g| g.0 != self.cur);
+                    self.o.glue.push((self.cur, h));
+                }
+            }
         }
     }
 
@@ -3192,6 +3492,7 @@ impl eframe::App for App {
         self.import_dialog(&ctx);
         self.resume_dialog(&ctx);
         self.halt_dialog(&ctx);
+        self.hunt_step(&ctx);
         self.update_dialog(&ctx);
     }
 
@@ -3203,6 +3504,33 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plane_correction_holds_going_away_from_the_start_frame() {
+        let mut app = App::new(None, None, None);
+        let (a, b) = (track::translation(4., 0.), track::translation(0., 9.));
+        (app.o.ref_frame, app.o.plane, app.o.glue) = (10, vec![[0., 0.], [8., 0.], [8., 8.], [0., 8.]], vec![(12, a), (20, b), (5, b)]);
+        assert_eq!([10, 11, 12, 19, 20, 99].map(|i| app.o.glue_at(i)), [track::IDENT, track::IDENT, a, a, b, b]);
+        assert_eq!([9, 6, 5, 0].map(|i| app.o.glue_at(i)), [track::IDENT, track::IDENT, b, b]);
+        let shown = vec![Some(FrameData { h: track::translation(1., 1.), pts: vec![], opacity: 1., guessed: false, score: 1. }); 13];
+        assert_eq!(app.o.glued(&shown)[12].as_ref().unwrap().h, track::translation(5., 1.));
+        app.o.frames = vec![None; 4];
+        let saved = app.keep();
+        let mut fresh = App::new(None, None, None);
+        fresh.o.frames = vec![None; 4];
+        fresh.restore(&saved);
+        assert_eq!((fresh.o.plane.len(), fresh.o.glue.clone()), (4, vec![(12, a), (20, b), (5, b)]));
+        (app.o.zone, app.o.text_on, app.o.shape) = (true, true, vec![[100., 100.], [140., 100.], [140., 200.], [100., 200.]]);
+        assert_eq!([[120., 60.], [120., 40.], [200., 260.]].map(|a| app.o.apart(&[a])), [None, Some(60.), Some(84.852814)]);
+        app.o.anchor = Some([120., 20.]);
+        assert!(app.far(&app.o).is_some_and(|m| m.contains("80 px")) && app.o.apart(&[]).is_none());
+        (app.o.plane, app.o.lay, app.o.glue) = (vec![[10., 10.], [30., 14.], [30., 40.], [10., 36.]], true, vec![]);
+        let ((level, b), shown) = (app.o.level().unwrap(), vec![Some(FrameData { h: track::IDENT, pts: vec![], opacity: 1., guessed: false, score: 1. })]);
+        let (flat, back) = (app.o.glued(&shown)[0].clone().unwrap().h, track::apply(&track::mul(&level, &app.o.seat()), [17., 21.]));
+        assert!(flat == level && (back[0] - 17.).abs() < 1e-3 && (back[1] - 21.).abs() < 1e-3);
+        let top = [track::apply(&level, [b[0], b[1]]), track::apply(&level, [b[2], b[1]])];
+        assert!((top[0][0] - 10.).abs() < 1e-3 && (top[0][1] - 10.).abs() < 1e-3 && (top[1][1] - 14.).abs() < 1e-3, "{top:?}");
+    }
 
     #[test]
     fn a_session_comes_back_with_its_objects_and_tracking() {

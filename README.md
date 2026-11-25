@@ -147,6 +147,30 @@ Une ligne déjà mise en perspective dans Aegisub garde ce réglage : ses `\frx`
 `\org`, `\fscx` et `\fscy` servent de pose de départ, et les valeurs de l'onglet s'y ajoutent. C'est
 aussi le cas quand on n'exporte que le tracking.
 
+*Plan d'attache* pose quatre coins sur la surface qui porte le texte, même loin de la zone suivie. Le
+plan suit le tracking et ne tracke rien lui-même. Avec *Poser*, glissez ses coins sur la surface : le
+texte ne bouge pas. Un quadrillage prolonge le plan jusqu'à son horizon, ce qui montre si la perspective
+est la bonne, et le côté épais du cadre marque le haut. *Coucher le texte sur le plan* donne au texte
+cette perspective, comme l'outil de perspective d'Aegisub le fait avec son cadre à quatre coins. La
+*Vue redressée* montre alors la surface à plat et de face : un plan bien posé y donne une surface
+droite, immobile pendant la lecture.
+
+*Corriger ici* sert quand le texte glisse sur une frame alors que la zone suit bien, par exemple quand
+le dessin est refait en cours de plan. Sur cette frame, replacez les coins sur la même surface : le
+texte suit, et la correction vaut pour les frames suivantes en s'éloignant de la frame de départ,
+jusqu'à la correction suivante. Les frames corrigées sont listées sous les boutons, avec *Effacer
+celle-ci*. Le plan d'attache demande le mode *Zone*.
+
+*Problème suivant ▶* cherche pour vous où corriger. Il avance depuis la frame affichée, en s'éloignant
+de la frame de départ, et s'arrête à la première frame où la surface du plan ne ressemble plus à sa
+dernière référence, qui est la frame de départ ou la dernière correction. Il y propose jusqu'à quatre
+cadres de couleur, *Suivi tel quel*, *Plan recalé*, *Autour du texte* et *Recherche élargie*, chacun
+avec un pourcentage de ressemblance. Un clic sur un cadre le prend comme correction, et ses coins
+restent ajustables. *Suivi tel quel* valide la frame sans rien changer, ce qui en fait la nouvelle
+référence. *Chercher ici* fait les mêmes propositions sur la frame affichée. Ces cadres sont des points
+de départ : quand le dessin a été refait, aucun n'est forcément exact, et sur un objet qui se balance
+la recherche peut s'arrêter à chaque nouvelle pose.
+
 L'aperçu du texte est rendu par libass (via ffmpeg), y compris pendant la lecture. Il montre ce
 qu'Aegisub affichera, à la police près si le style n'est pas connu.
 
@@ -219,12 +243,15 @@ Les touches sont ignorées pendant la saisie dans un champ.
 | Situation | Quoi faire |
 |---|---|
 | Il traverse l'image très vite | Dessiner la zone sur une image où il est entier, de préférence immobile, régler *Recherche* sur *Grand*, puis *◀ Tout ▶*. Le curseur monte jusqu'à 600 px. Au-delà de 96 px son libellé rougit, parce que le suivi ralentit et risque davantage d'accrocher un objet ressemblant. Sur l'image où il entre à peine dans le champ, il reste trop peu de l'objet pour le suivre |
+| Il saute ou bascule d'un coup d'une frame à l'autre | Mode *Zone* avec *Recaler sur la frame de départ* coché : dès que le suivi décroche, le tracker recherche l'objet jusqu'à une demi-diagonale de zone de sa dernière position, tourné de 40° au plus et à une taille proche. Un panneau qui pivote change aussi de perspective, donc cocher *Perspective*. Tracer la zone sur le dessin ou les lettres : le bord du panneau gêne ici, parce que son épaisseur et son ombre changent avec l'angle. Si rien ne ressemble assez à la frame de départ, les frames sont marquées estimées |
+| Le texte tremble alors que la zone est stable | Il est trop loin de la zone : une erreur minuscule sur la zone grossit avec la distance. Sur un panneau de 900 px de haut, un texte posé en haut bougeait de 0,5 px avec la zone juste dessous, de 2,4 px avec la zone 480 px plus bas et de 7,5 px avec la zone tout en bas. Tracer la zone sur ce qui se trouve juste à côté du texte, sans y mettre le bord de l'objet. Quand le texte est loin de la zone, un avertissement orange s'affiche dans l'onglet Texte et dans le récapitulatif d'export, y compris pour les lignes d'Aegisub exportées en tracking seul |
+| Le texte se décale après une bascule alors que la zone suit bien | Le dessin a été refait : son contour et ses lettres n'ont pas bougé ensemble, et un texte posé loin de la zone suit ce qu'il y a dans la zone. Onglet Texte, *Plan d'attache* : poser le plan sur la surface du texte, aller sur la première frame d'après la bascule et y replacer ses coins avec *Corriger ici*. Autre méthode : couper la ligne dans Aegisub à la frame de la bascule, replacer le texte sur la première frame de chaque moitié, puis tracker chaque moitié à part en dessinant la zone sur cette première frame |
 | L'objet apparaît d'un coup | Se placer sur une frame où il est bien visible, dessiner la zone, puis *◀ Tracker* pour remonter le temps |
 | Aplat de couleur, objet sans détails | Mode *Zone*, tracée sur les bords de l'objet ou juste autour : le tracker aligne les contours sur ceux de la frame de départ, même sans texture. Le canal *Automatique* (par défaut) choisit le mélange de couleurs où la zone ressort le mieux, ce qui permet de suivre un objet de même luminosité que le décor. *Voir*, à côté de *Canal*, montre la vidéo comme le tracker la voit, en niveaux de gris |
 | Il grossit beaucoup ou sort de l'image | Mode *Zone* : quand trop de points sont perdus, le tracker en reprend dans la partie encore visible et continue le même mouvement. Une zone presque entièrement sortie continue sur sa lancée |
 | Il s'écrase, s'étire ou se voit de biais | Cocher *Cisaillement* ou *Perspective* avant de tracker. Sans cela le suivi décroche dès que l'objet se déforme, et le message de fin le signale |
 | Sa surface se plie | *Mesh* suit une grille de points un par un, et la sélection se déforme avec la surface |
-| Il passe derrière autre chose | Mode *Zone* avec *Recaler sur la frame de départ* coché : le tracker prolonge la trajectoire (déplacement et rotation) et reprend l'objet dès qu'il reparaît. Perdu plus de quelques frames, l'objet est recherché dans toute l'image, à une orientation et une taille proches de celles attendues. Un objet identique qui passe sur la cible peut tromper la reprise |
+| Il passe derrière autre chose | Mode *Zone* avec *Recaler sur la frame de départ* coché : le tracker prolonge la trajectoire (déplacement et rotation) et reprend l'objet dès qu'il reparaît. Tant qu'il est perdu, l'objet est recherché dans toute l'image, à une orientation et une taille proches de celles attendues. Un objet identique qui passe sur la cible peut tromper la reprise |
 | Quelque chose le recouvre peu à peu | Régler *Recouvrement* (voir plus bas) |
 | Il apparaît ou disparaît en fondu | Cocher *Opacité* sous *Autres suivis* avant de tracker, en partant d'une frame où la zone est bien visible. La sélection reste en place quand elle devient invisible, et *Opacité (fondus)* se coche pour le cache et le texte, qui reçoivent `\alpha` frame par frame. Cette case se règle aussi séparément dans la liste de chacun |
 | Le suivi se décale peu à peu | *Recaler sur la frame de départ* (coché par défaut, section Recherche) réaligne chaque frame sur celle où le tracking a commencé, ce qui empêche les petites erreurs de s'additionner. À décocher si l'objet change vraiment d'aspect en cours de route. *Affiner* fait le même recalage après coup sur les frames suivies de la plage, par exemple après avoir replacé la sélection à la main |
@@ -283,7 +310,8 @@ Le menu *Vue* aide à juger un tracking :
   douceur, sur le nombre de frames réglé par *Voisines entraînées* (6 de chaque côté par défaut).
 - *Vue redressée* ouvre une fenêtre où l'objet est vu de face et immobile, quelle que soit la frame. Si
   l'image y bouge pendant la lecture, le tracking est à reprendre. Dans l'onglet Texte, un clic dans
-  cette fenêtre place le texte bien droit.
+  cette fenêtre place le texte bien droit. Avec un plan d'attache posé, elle redresse la surface de ce
+  plan.
 - La *Loupe* agrandit la vidéo autour du pointeur, pour poser un point au pixel près.
 - *Masquer les tracés* (touche H) ne laisse que la vidéo, pour comparer avec l'image d'origine.
 - *Lecture en boucle sur la plage* fait repartir la lecture au début de la plage.
