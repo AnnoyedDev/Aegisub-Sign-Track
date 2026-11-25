@@ -34,7 +34,7 @@ jobs:
       - name: Archives
         run: |
           mkdir aegisigntrack
-          cp aegisub/aegisigntrack.lua README.md LICENSE aegisigntrack/
+          cp aegisub/aegisigntrack.lua README.md README.en.md LICENSE aegisigntrack/
           cp target/release/aegisigntrack aegisigntrack/
           tar czf aegisigntrack-linux-x86_64.tar.gz aegisigntrack
           rm aegisigntrack/aegisigntrack

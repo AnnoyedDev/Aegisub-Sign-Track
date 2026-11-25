@@ -33,6 +33,8 @@ pub struct Params {
     pub warp: bool,
     pub hold_fades: bool,
     pub realign: bool,
+    pub hole: Vec<P>,
+    pub axis: u8,
 }
 
 #[derive(Clone)]
@@ -41,6 +43,7 @@ pub struct FrameData {
     pub pts: Vec<P>,
     pub opacity: f32,
     pub guessed: bool,
+    pub score: f32,
 }
 
 impl FrameData {
@@ -95,6 +98,11 @@ impl Gray {
             })
             .collect();
         Gray { w, h, d }
+    }
+
+    pub fn view(&self) -> Vec<u8> {
+        let low = self.d.iter().fold(0f32, |m, v| m.min(*v));
+        self.d.iter().map(|v| (v - low).clamp(0., 255.) as u8).collect()
     }
 
     fn px(&self, x: i32, y: i32) -> f32 {
@@ -252,14 +260,14 @@ fn realign(refp: &[Gray], b: &[Gray], anchors: &[P], refs: &[P], fd: &FrameData,
     let dst: Vec<P> = found.iter().zip(&starts).map(|(f, s)| f.unwrap_or(*s)).collect();
     if p.warp {
         let h = fit(&p.motion, anchors, &dst, &vec![true; dst.len()])?;
-        return Some(FrameData { h, pts: dst, opacity: fd.opacity, guessed: false });
+        return Some(FrameData { h, pts: dst, opacity: fd.opacity, guessed: false, score: 1. });
     }
     let better = fit_robust(&p.motion, anchors, &dst, &mut ok)?;
     let kept = ok.iter().filter(|o| **o).count();
     if kept < 8 || kept * 5 < anchors.len() || anchors.iter().any(|q| dist(apply(&better, *q), apply(&h, *q)) > 2. * limit) {
         return None;
     }
-    Some(FrameData { h: better, pts: refs.iter().map(|q| apply(&better, *q)).collect(), opacity: fd.opacity, guessed: false })
+    Some(FrameData { h: better, pts: refs.iter().map(|q| apply(&better, *q)).collect(), opacity: fd.opacity, guessed: false, score: 1. })
 }
 
 fn edge(g: &Gray, x: f32, y: f32) -> f32 {
@@ -288,7 +296,7 @@ pub struct Template {
 }
 
 impl Template {
-    pub fn new(refp: &[Gray], zone: &[P], margin: f32) -> Template {
+    pub fn new(refp: &[Gray], zone: &[P], margin: f32, hole: &[P]) -> Template {
         let b = bbox(zone);
         let b = [b[0] - margin, b[1] - margin, b[2] + margin, b[3] + margin];
         let c = [((b[0] + b[2]) / 2.) as f64, ((b[1] + b[3]) / 2.) as f64];
@@ -314,7 +322,7 @@ impl Template {
                     row += st;
                 }
                 let top = v.iter().fold(0f32, |m, q| m.max(q.0.t));
-                let v: Vec<Sample> = v.into_iter().filter(|q| q.1 || q.0.t > 0.1 * top).map(|q| q.0).collect();
+                let v: Vec<Sample> = v.into_iter().filter(|q| (q.1 || q.0.t > 0.1 * top) && !in_poly(hole, q.0.p)).map(|q| q.0).collect();
                 let energy = |part: usize| v.iter().filter(|q| q.part == part).map(|q| q.t * q.t).sum::<f32>();
                 let all: f32 = (0..4).map(energy).sum();
                 let parts = std::array::from_fn(|k| energy(k) >= 0.08 * all);
@@ -657,22 +665,22 @@ fn step(a: &[Gray], b: &[Gray], ref_pts: &[P], prev: &FrameData, guess: &H, p: &
     let mut ok: Vec<bool> = tracked.iter().map(Option::is_some).collect();
     if p.user_pts {
         if let Some(i) = ok.iter().position(|o| !*o) {
-            return Err(format!("point {} perdu — corrigez-le à la main puis relancez", i + 1));
+            return Err(tf!("point {} perdu — corrigez-le à la main puis relancez", "point {} lost — fix it by hand, then run again", i + 1));
         }
     }
     let mut pts: Vec<P> = tracked.iter().zip(&prev.pts).map(|(t, q)| t.unwrap_or(*q)).collect();
     let h = if p.warp { fit(&p.motion, ref_pts, &pts, &ok) } else { fit_robust(&p.motion, ref_pts, &pts, &mut ok) };
-    let h = h.ok_or("plus aucun point suivi")?;
+    let h = h.ok_or(t!("plus aucun point suivi", "no tracked point left"))?;
     if !p.warp {
         let reach = (0..pts.len()).filter(|&i| ok[i]).map(|i| dist(pts[i], prev.pts[i])).fold(0f32, f32::max);
         if ref_pts.iter().zip(&prev.pts).any(|(r, old)| dist(apply(&h, *r), *old) > 2. * reach + p.pattern as f32) {
-            return Err("trop peu de points suivis".into());
+            return Err(t!("trop peu de points suivis", "too few tracked points").into());
         }
     }
     let m = &p.motion;
     let need = if m.perspective { 4 } else if m.shear { 3 } else if m.scale || m.rotation { 2 } else { 1 };
     if ok.iter().filter(|o| **o).count() < (pts.len() / 10).max(need.min(pts.len())) {
-        return Err("trop peu de points suivis".into());
+        return Err(t!("trop peu de points suivis", "too few tracked points").into());
     }
     for i in (0..pts.len()).filter(|&i| !ok[i]) {
         let q = apply(&h, ref_pts[i]);
@@ -683,20 +691,22 @@ fn step(a: &[Gray], b: &[Gray], ref_pts: &[P], prev: &FrameData, guess: &H, p: &
             q
         };
     }
-    let mut fd = FrameData { h, pts, opacity: 1., guessed: false };
+    let score = ok.iter().filter(|o| **o).count() as f32 / ok.len().max(1) as f32;
+    let mut fd = FrameData { h, pts, opacity: 1., guessed: false, score };
     fd.opacity = opacity(&b[0], &fd, ref_pts, p.warp, opa);
     Ok((fd, ok.iter().filter(|o| **o).count(), moved))
 }
 
-fn reseed(g: &Gray, zone: &[P], fd: &FrameData) -> Option<(Vec<P>, FrameData)> {
+fn reseed(g: &Gray, zone: &[P], fd: &FrameData, hole: &[P]) -> Option<(Vec<P>, FrameData)> {
     let poly: Vec<P> = zone.iter().map(|v| apply(&fd.h, *v)).collect();
-    let found = detect(g, &poly);
+    let back = inv(&fd.h);
+    let mut found = detect(g, &poly);
+    found.retain(|q| !in_poly(hole, apply(&back, *q)));
     if found.len() < 4 {
         return None;
     }
     let n = fd.pts.len();
     let pts: Vec<P> = (0..n).map(|i| found[i * found.len() / n]).collect();
-    let back = inv(&fd.h);
     Some((pts.iter().map(|q| apply(&back, *q)).collect(), FrameData { pts, ..fd.clone() }))
 }
 
@@ -721,21 +731,23 @@ pub fn run(
     stop: &AtomicBool,
     emit: &mut dyn FnMut(usize, FrameData),
 ) -> Result<(), String> {
-    let mut a = load(start).ok_or("lecture de la vidéo impossible")?;
+    let mut a = load(start).ok_or(t!("lecture de la vidéo impossible", "cannot read the video"))?;
     let refp = ref_frame.filter(|_| p.realign).and_then(load);
     let renew = !p.warp && zone.len() >= 3;
-    let tpl = refp.as_ref().filter(|_| renew).map(|r| Template::new(r, zone, p.pattern as f32));
+    let tpl = refp.as_ref().filter(|_| renew).map(|r| Template::new(r, zone, p.pattern as f32, &p.hole));
     let mut refs: Vec<P> = if renew { fd.pts.iter().map(|q| apply(&inv(&fd.h), *q)).collect() } else { ref_pts.to_vec() };
     let (mut prev, mut i) = (fd, start);
     let mut peak = prev.opacity;
     let c0 = refs_centre(zone, ref_pts);
     let centre = |f: &FrameData| apply(&f.h, c0);
     let mut trail = vec![centre(&prev)];
+    let kept = trail[0];
+    let pin = |f: FrameData| pinned(f, c0, kept, p.axis);
     let mut guess = IDENT;
     let (mut base, mut since, mut lost) = (1f32, u32::MAX, 0u32);
     while i != end && !stop.load(Ordering::Relaxed) {
         let j = if end > i { i + 1 } else { i - 1 };
-        let b = load(j).ok_or("lecture de la vidéo impossible")?;
+        let b = load(j).ok_or(t!("lecture de la vidéo impossible", "cannot read the video"))?;
         let faint = p.hold_fades && prev.opacity < 0.3 * peak;
         let fading = p.hold_fades && prev.opacity < 0.5 * peak;
         let pred = mul(&guess, &prev.h);
@@ -746,7 +758,7 @@ pub fn run(
         let direct = near.is_some_and(|f| if lost > 0 { back(&f) } else { f.score >= 0.95 * base });
         let mut tracked = if faint || lost > 0 || direct { Err(String::new()) } else { step(&a, &b, &refs, &prev, &guess, p, opa) };
         if tracked.is_err() && renew && !fading && lost == 0 && !direct {
-            if let Some((r, f)) = reseed(&a[0], zone, &prev) {
+            if let Some((r, f)) = reseed(&a[0], zone, &prev, &p.hole) {
                 if let Ok(t) = step(&a, &b, &r, &f, &guess, p, opa) {
                     (refs, tracked) = (r, Ok(t));
                 }
@@ -782,7 +794,7 @@ pub fn run(
         let trusted = matches!(&tracked, Ok((f, inliers, _)) if inliers * 2 >= f.pts.len() && drift(&f.h, &pred) <= 0.5 * (drift(&pred, &prev.h) + p.pattern as f32));
         if let Some(Match { h, score, .. }) = found {
             let sure = score >= 0.8 * base;
-            let mut f = FrameData { h, pts: refs.iter().map(|q| apply(&h, *q)).collect(), opacity: prev.opacity, guessed: false };
+            let mut f = FrameData { h, pts: refs.iter().map(|q| apply(&h, *q)).collect(), opacity: prev.opacity, guessed: false, score: (score / base).min(1.) };
             f.opacity = opacity(&b[0], &f, &refs, false, opa);
             let (from, to): (Vec<P>, Vec<P>) = zone.iter().map(|v| (apply(&prev.h, *v), apply(&h, *v))).unzip();
             let moved = if far { IDENT } else if lost > 0 || !sure { guess } else { fit(&SIMILARITY, &from, &to, &vec![true; from.len()]).unwrap_or(IDENT) };
@@ -801,7 +813,7 @@ pub fn run(
             let lin = [guess[0] * slow, guess[1] * slow, 0., guess[3] * slow, guess[4] * slow, 0., 0., 0., 1.];
             guess = mul(&translation(to[0] as f64, to[1] as f64), &mul(&lin, &translation(-c[0] as f64, -c[1] as f64)));
             let pred = mul(&guess, &prev.h);
-            let held = FrameData { h: pred, pts: prev.pts.iter().map(|q| apply(&guess, *q)).collect(), opacity: prev.opacity, guessed: true };
+            let held = pin(FrameData { h: pred, pts: prev.pts.iter().map(|q| apply(&guess, *q)).collect(), opacity: prev.opacity, guessed: true, score: 0. });
             emit(j, held.clone());
             guess = carry(&guess, centre(&prev), centre(&held));
             (a, i, prev, lost) = (b, j, held, lost + 1);
@@ -815,7 +827,7 @@ pub fn run(
             }
         }
         prev = match tracked {
-            Ok((fd, inliers, _)) if renew && !fading && inliers.saturating_mul(10) < fd.pts.len() * 6 => match reseed(&b[0], zone, &fd) {
+            Ok((fd, inliers, _)) if renew && !fading && inliers.saturating_mul(10) < fd.pts.len() * 6 => match reseed(&b[0], zone, &fd, &p.hole) {
                 Some((r, f)) => {
                     refs = r;
                     f
@@ -826,7 +838,7 @@ pub fn run(
             Err(_) if fading || (renew && visible(&b[0], zone, &prev) < 0.3) => {
                 let (first, last, steps) = (trail[0], trail[trail.len() - 1], (trail.len() - 1).max(1) as f32);
                 let v = [(last[0] - first[0]) / steps, (last[1] - first[1]) / steps];
-                let mut held = FrameData { h: mul(&translation(v[0] as f64, v[1] as f64), &prev.h), pts: prev.pts.iter().map(|q| [q[0] + v[0], q[1] + v[1]]).collect(), opacity: prev.opacity, guessed: true };
+                let mut held = pin(FrameData { h: mul(&translation(v[0] as f64, v[1] as f64), &prev.h), pts: prev.pts.iter().map(|q| [q[0] + v[0], q[1] + v[1]]).collect(), opacity: prev.opacity, guessed: true, score: 0. });
                 if fading {
                     held.opacity = opacity(&b[0], &held, &refs, p.warp, opa);
                 }
@@ -834,8 +846,9 @@ pub fn run(
                 (a, i, prev) = (b, j, held);
                 continue;
             }
-            Err(e) => return Err(format!("Frame {} : {e}", j + 1)),
+            Err(e) => return Err(tf!("Frame {} : {e}", "Frame {}: {e}", j + 1)),
         };
+        prev = pin(prev);
         peak = peak.max(prev.opacity);
         guess = carry(&guess, trail[trail.len() - 1], centre(&prev));
         trail.push(centre(&prev));
@@ -858,16 +871,18 @@ pub fn refine(
     stop: &AtomicBool,
     emit: &mut dyn FnMut(usize, FrameData),
 ) -> Result<usize, String> {
-    let refp = load(ref_frame).ok_or("lecture de la vidéo impossible")?;
+    let refp = load(ref_frame).ok_or(t!("lecture de la vidéo impossible", "cannot read the video"))?;
     let mut done = 0;
+    let centre = refs_centre(&[], ref_pts);
     for (i, mut fd) in frames {
         if stop.load(Ordering::Relaxed) {
             break;
         }
+        let kept = apply(&fd.h, centre);
         if i == ref_frame {
             continue;
         }
-        let b = load(i).ok_or("lecture de la vidéo impossible")?;
+        let b = load(i).ok_or(t!("lecture de la vidéo impossible", "cannot read the video"))?;
         let refs: Vec<P> = if p.warp { ref_pts.to_vec() } else { fd.pts.iter().map(|q| apply(&inv(&fd.h), *q)).collect() };
         let mut changed = false;
         for _ in 0..2 {
@@ -876,10 +891,38 @@ pub fn refine(
         }
         if changed {
             done += 1;
-            emit(i, fd);
+            emit(i, pinned(fd, centre, kept, p.axis));
         }
     }
     Ok(done)
+}
+
+pub fn between(a: &FrameData, b: &FrameData, corners: &[P], t: f32) -> FrameData {
+    let (from, to): (Vec<P>, Vec<P>) = corners.iter().map(|v| (apply(&a.h, *v), apply(&b.h, *v))).unzip();
+    let m = fit(&SIMILARITY, &from, &to, &vec![true; from.len()]).unwrap_or(IDENT);
+    let n = from.len().max(1) as f32;
+    let c = from.iter().fold([0f32; 2], |c, q| [c[0] + q[0] / n, c[1] + q[1] / n]);
+    let e = apply(&m, c);
+    let (k, turn) = (m[0].hypot(m[3]).max(1e-9).powf(t as f64), m[3].atan2(m[0]) * t as f64);
+    let lin = [k * turn.cos(), -k * turn.sin(), 0., k * turn.sin(), k * turn.cos(), 0., 0., 0., 1.];
+    let at = [c[0] + (e[0] - c[0]) * t, c[1] + (e[1] - c[1]) * t];
+    let step = mul(&translation(at[0] as f64, at[1] as f64), &mul(&lin, &translation(-c[0] as f64, -c[1] as f64)));
+    let pts = if a.pts.len() == b.pts.len() {
+        a.pts.iter().zip(&b.pts).map(|(p, q)| [p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t]).collect()
+    } else {
+        a.pts.iter().map(|p| apply(&step, *p)).collect()
+    };
+    FrameData { h: mul(&step, &a.h), pts, opacity: a.opacity + (b.opacity - a.opacity) * t, guessed: true, score: 0. }
+}
+
+fn pinned(f: FrameData, centre: P, kept: P, axis: u8) -> FrameData {
+    let at = apply(&f.h, centre);
+    let d = match axis {
+        1 => [0., kept[1] - at[1]],
+        2 => [kept[0] - at[0], 0.],
+        _ => return f,
+    };
+    FrameData { h: mul(&translation(d[0] as f64, d[1] as f64), &f.h), pts: f.pts.iter().map(|q| [q[0] + d[0], q[1] + d[1]]).collect(), ..f }
 }
 
 fn carry(g: &H, from: P, to: P) -> H {
@@ -946,6 +989,35 @@ pub fn detect(g: &Gray, poly: &[P]) -> Vec<P> {
     let top = best.iter().fold(0f32, |m, c| m.max(c.0));
     let strong: Vec<P> = best.iter().filter(|c| c.0 > 0.03 * top).map(|c| c.1).collect();
     if strong.len() >= 8 { strong } else { best.iter().filter(|c| c.0 > 0.).map(|c| c.1).collect() }
+}
+
+pub fn edge_blur(g: &Gray, poly: &[P]) -> Option<f32> {
+    let b = bbox(poly);
+    let (x0, y0, x1, y1) = ((b[0] - 6.).max(8.), (b[1] - 6.).max(8.), (b[2] + 6.).min(g.w as f32 - 9.), (b[3] + 6.).min(g.h as f32 - 9.));
+    let stride = (((x1 - x0) * (y1 - y0) / 60000.).sqrt().ceil() as usize).max(1);
+    let mut found: Vec<(f32, f32)> = vec![];
+    for y in (y0 as i32..=y1 as i32).step_by(stride) {
+        for x in (x0 as i32..=x1 as i32).step_by(stride) {
+            let (gx, gy) = ((g.px(x + 1, y) - g.px(x - 1, y)) / 2., (g.px(x, y + 1) - g.px(x, y - 1)) / 2.);
+            let m = gx.hypot(gy);
+            if m < 4. {
+                continue;
+            }
+            let (dx, dy, x, y) = (gx / m, gy / m, x as f32, y as f32);
+            let slope = |t: f32| (g.at(x + (t + 0.5) * dx, y + (t + 0.5) * dy) - g.at(x + (t - 0.5) * dx, y + (t - 0.5) * dy)).abs();
+            let peak = slope(0.);
+            if peak < slope(1.) || peak < slope(-1.) {
+                continue;
+            }
+            let step = (g.at(x + 7. * dx, y + 7. * dy) - g.at(x - 7. * dx, y - 7. * dy)).abs();
+            found.push((peak, step / (peak * (2. * std::f32::consts::PI).sqrt())));
+        }
+    }
+    found.sort_by(|a, b| b.0.total_cmp(&a.0));
+    found.truncate((found.len() / 5).max(20));
+    let mut wide: Vec<f32> = found.iter().map(|f| f.1).collect();
+    wide.sort_by(f32::total_cmp);
+    (wide.len() >= 20).then(|| (wide[wide.len() / 2].powi(2) - 0.62).max(0.).sqrt())
 }
 
 pub fn contrast(rgb: &[u8], w: usize, h: usize, shape: &[P], margin: f32) -> [f32; 3] {
@@ -1018,6 +1090,49 @@ pub fn opacity_samples(g: &Gray, shape: &[P], pattern: i32) -> Vec<(P, f32)> {
         }
     }
     v
+}
+
+pub fn parts(h: &H, centre: P) -> [f64; 4] {
+    let (p, j) = (apply(h, centre), jacobian(h, centre));
+    [p[0] as f64, p[1] as f64, ((j[0] * j[3] - j[1] * j[2]).abs().max(1e-12) as f64).sqrt(), ((j[2] - j[1]) as f64).atan2((j[0] + j[3]) as f64)]
+}
+
+pub fn retouch(f: &FrameData, centre: P, to: [f64; 4]) -> FrameData {
+    let was = parts(&f.h, centre);
+    let (k, turn) = (to[2] / was[2], to[3] - was[3]);
+    let lin = [k * turn.cos(), -k * turn.sin(), 0., k * turn.sin(), k * turn.cos(), 0., 0., 0., 1.];
+    let step = mul(&translation(to[0], to[1]), &mul(&lin, &translation(-was[0], -was[1])));
+    FrameData { h: mul(&step, &f.h), pts: f.pts.iter().map(|q| apply(&step, *q)).collect(), ..f.clone() }
+}
+
+pub fn ease(frames: &[Option<FrameData>], centre: P, sigma: [f32; 3]) -> Vec<Option<FrameData>> {
+    let mut out = frames.to_vec();
+    let mut s = 0;
+    while s < frames.len() && sigma.iter().any(|v| *v > 0.) {
+        if frames[s].is_none() {
+            s += 1;
+            continue;
+        }
+        let e = (s..frames.len()).find(|&i| frames[i].is_none()).unwrap_or(frames.len());
+        let mut rows: Vec<[f64; 4]> = frames[s..e].iter().map(|f| parts(&f.as_ref().unwrap().h, centre)).collect();
+        for i in 1..rows.len() {
+            rows[i][3] += std::f64::consts::TAU * ((rows[i - 1][3] - rows[i][3]) / std::f64::consts::TAU).round();
+            rows[i][2] = rows[i][2].ln();
+        }
+        rows[0][2] = rows[0][2].ln();
+        let last = rows.len() as i64 - 1;
+        let soft = |c: usize, sg: f32| -> Vec<f64> {
+            let r = (3. * sg).ceil() as i64;
+            let at = |i: i64| if i < 0 { 2. * rows[0][c] - rows[(-i).min(last) as usize][c] } else if i > last { 2. * rows[last as usize][c] - rows[(2 * last - i).max(0) as usize][c] } else { rows[i as usize][c] };
+            (0..=last).map(|i| if sg <= 0. { rows[i as usize][c] } else { (-r..=r).map(|d| (-(d * d) as f64 / (2. * (sg * sg) as f64)).exp() * at(i + d)).sum::<f64>() / (-r..=r).map(|d| (-(d * d) as f64 / (2. * (sg * sg) as f64)).exp()).sum::<f64>() }).collect()
+        };
+        let (x, y, k, t) = (soft(0, sigma[0]), soft(1, sigma[0]), soft(2, sigma[1]), soft(3, sigma[2]));
+        for i in 0..rows.len() {
+            out[s + i] = Some(retouch(frames[s + i].as_ref().unwrap(), centre, [x[i], y[i], k[i].exp(), t[i]]));
+        }
+        s = e;
+    }
+    out
 }
 
 pub fn smooth(frames: &[Option<FrameData>], sigma: f32) -> Vec<Option<FrameData>> {
@@ -1099,7 +1214,7 @@ mod tests {
     }
 
     fn params(motion: Motion, user_pts: bool) -> Params {
-        Params { motion, search: 48., pattern: 10, channel: Channel::Luma, user_pts, warp: user_pts, hold_fades: false, realign: false }
+        Params { motion, search: 48., pattern: 10, channel: Channel::Luma, user_pts, warp: user_pts, hold_fades: false, realign: false, hole: vec![], axis: 0 }
     }
 
     const ALL: Motion = Motion { translation: true, scale: true, rotation: true, shear: true, perspective: true };
@@ -1107,7 +1222,7 @@ mod tests {
     fn track(tex: fn(P) -> f32, hs: &[H], alphas: &[f32], ref_pts: Vec<P>, shape: &[P], p: &Params) -> Vec<FrameData> {
         let load = |i: usize| Some(pyramid(frame(tex, &hs[i], alphas[i]), p.search, p.pattern));
         let opa = opacity_samples(&frame(tex, &hs[0], alphas[0]), shape, p.pattern);
-        let start = FrameData { h: IDENT, pts: ref_pts.clone(), opacity: 1., guessed: false };
+        let start = FrameData { h: IDENT, pts: ref_pts.clone(), opacity: 1., guessed: false, score: 1. };
         let mut out = vec![start.clone()];
         let zone = if p.warp { &[][..] } else { shape };
         run(&load, &ref_pts, zone, &opa, Some(0), 0, start, hs.len() - 1, p, &AtomicBool::new(false), &mut |_, f| out.push(f)).unwrap();
@@ -1122,13 +1237,34 @@ mod tests {
         for texture in [tex, drawing] {
             let refp = pyramid(frame(texture, &IDENT, 1.), 48., 10);
             let cur = pyramid(frame(texture, &truth, 1.), 48., 10);
-            let t = Template::new(&refp, &shape, 10.);
+            let t = Template::new(&refp, &shape, 10., &[]);
             for (dx, top) in [(0., 9), (3., 9), (1., 1)] {
                 let Match { h, score, .. } = t.align(&cur, &mul(&translation(dx, 0.), &truth), &ALL, top);
                 let worst = shape.iter().map(|v| dist(apply(&h, *v), apply(&truth, *v))).fold(0f32, f32::max);
                 assert!(worst < 0.1 && score > 0.95, "départ à {dx} px : erreur {worst} px, score {score}");
             }
         }
+    }
+
+    #[test]
+    fn a_locked_axis_does_not_move() {
+        let hs: Vec<H> = (0..20).map(|i| translation(3. * i as f64, [0., 1.5, -1.][i % 3])).collect();
+        let shape = [[60., 80.], [120., 80.], [120., 140.], [60., 140.]];
+        let ref_pts = detect(&frame(tex, &hs[0], 1.), &shape);
+        for (axis, realign) in [(1, true), (1, false), (2, true)] {
+            let p = Params { axis, realign, motion: SIMILARITY, ..params(ALL, false) };
+            let out = track(tex, &hs, &[1.; 20], ref_pts.clone(), &shape, &p);
+            for (i, f) in out.iter().enumerate() {
+                let c = apply(&f.h, [90., 110.]);
+                if axis == 1 {
+                    assert!((c[1] - 110.).abs() < 1e-3 && (c[0] - 90. - 3. * i as f32).abs() < 1., "frame {i} : {c:?}");
+                } else {
+                    assert!((c[0] - 90.).abs() < 1e-3, "frame {i} : {c:?}");
+                }
+            }
+        }
+        let free = track(tex, &hs, &[1.; 20], ref_pts, &shape, &Params { realign: true, motion: SIMILARITY, ..params(ALL, false) });
+        assert!((apply(&free[1].h, [90., 110.])[1] - 111.5).abs() < 0.3, "sans verrou, le mouvement vertical est suivi");
     }
 
     #[test]
@@ -1144,6 +1280,51 @@ mod tests {
         assert!((8..=16).all(|i| out[i].guessed), "les frames cachées doivent être marquées estimées");
         assert!(off(12) < 3., "trajectoire prolongée : {} px", off(12));
         assert!(!out[29].guessed && off(29) < 0.5, "après : {} px", off(29));
+    }
+
+    #[test]
+    fn interpolation_turns_and_grows_evenly_between_two_poses() {
+        let shape = [[40., 40.], [80., 40.], [80., 70.], [40., 70.]];
+        let pose = |t: f64| {
+            let (k, r) = (2f64.powf(t), 1.2 * t);
+            let lin = [k * r.cos(), -k * r.sin(), 0., k * r.sin(), k * r.cos(), 0., 0., 0., 1.];
+            mul(&translation(60. + 100. * t, 55. - 30. * t), &mul(&lin, &translation(-60., -55.)))
+        };
+        let key = |t: f64| FrameData { h: pose(t), pts: vec![], opacity: 1. - t as f32, guessed: false, score: 1. };
+        let mid = between(&key(0.), &key(1.), &shape, 0.25);
+        let off = shape.iter().map(|v| dist(apply(&mid.h, *v), apply(&pose(0.25), *v))).fold(0f32, f32::max);
+        assert!(off < 0.01 && mid.guessed && (mid.opacity - 0.75).abs() < 1e-6, "écart {off} px");
+    }
+
+    #[test]
+    fn ignored_area_takes_no_part_in_the_template() {
+        let shape = [[90., 60.], [230., 60.], [230., 180.], [90., 180.]];
+        let hole = [[150., 60.], [230., 60.], [230., 180.], [150., 180.]];
+        let truth = translation(3., -2.);
+        let refp = pyramid(frame(drawing, &IDENT, 1.), 48., 10);
+        let mut spoiled = frame(drawing, &truth, 1.);
+        for y in 0..spoiled.h {
+            for x in 150..spoiled.w {
+                spoiled.d[y * spoiled.w + x] = tex([x as f32 * 3., y as f32]);
+            }
+        }
+        let cur = pyramid(spoiled, 48., 10);
+        let start = translation(2., -1.);
+        let blind = Template::new(&refp, &shape, 10., &[]).align(&cur, &start, &SIMILARITY, 9);
+        let aware = Template::new(&refp, &shape, 10., &hole).align(&cur, &start, &SIMILARITY, 9);
+        let off = |m: &Match| dist(apply(&m.h, shape[0]), apply(&truth, shape[0]));
+        assert!(off(&aware) < 0.2 && aware.score > blind.score, "avec zone ignorée : {} px, score {} contre {}", off(&aware), aware.score, blind.score);
+    }
+
+    #[test]
+    fn edge_blur_is_measured_on_a_soft_and_on_a_sharp_edge() {
+        let shape = [[100., 60.], [220., 60.], [220., 180.], [100., 180.]];
+        for (sigma, low, high) in [(0.01f32, 0., 0.5), (2.5, 2., 3.)] {
+            let soft = |x: f32| 40. + 160. / (1. + (-(x - 160.) / (0.5513 * sigma)).exp());
+            let g = Gray { w: 320, h: 240, d: (0..320 * 240).map(|i| soft((i % 320) as f32)).collect() };
+            let got = edge_blur(&g, &shape).unwrap();
+            assert!((low..=high).contains(&got), "flou {sigma} mesuré {got}");
+        }
     }
 
     #[test]
@@ -1237,7 +1418,7 @@ mod tests {
         let nodes = mesh_nodes(&shape, 25.);
         let p = Params { warp: true, ..params(ALL, false) };
         let load = |i: usize| Some(pyramid(frame(i as f32), p.search, p.pattern));
-        let start = FrameData { h: IDENT, pts: nodes.clone(), opacity: 1., guessed: false };
+        let start = FrameData { h: IDENT, pts: nodes.clone(), opacity: 1., guessed: false, score: 1. };
         let mut last = start.clone();
         run(&load, &nodes, &[], &[], None, 0, start, 8, &p, &AtomicBool::new(false), &mut |_, f| last = f).unwrap();
         for (v, dy) in [(shape[0], 0.), (shape[3], 0.), (shape[1], 8.), (shape[2], 8.)] {
@@ -1272,7 +1453,7 @@ mod tests {
             assert!(dist(got, want) < 1., "{got:?} au lieu de {want:?}");
         }
         let load = |i: usize| Some(pyramid(frame(tex, &hs[i], alphas[i]), 48., 10));
-        let start = FrameData { h: IDENT, pts: ref_pts.clone(), opacity: 1., guessed: false };
+        let start = FrameData { h: IDENT, pts: ref_pts.clone(), opacity: 1., guessed: false, score: 1. };
         assert!(run(&load, &ref_pts, &shape, &[], None, 0, start, 7, &params(ALL, false), &AtomicBool::new(false), &mut |_, _| {}).is_err());
     }
 
@@ -1334,7 +1515,7 @@ mod tests {
             .enumerate()
             .map(|(i, h)| {
                 let off = mul(&translation(2.5, -1.5), h);
-                (i, FrameData { h: off, pts: ref_pts.iter().map(|q| apply(&off, *q)).collect(), opacity: 1., guessed: false })
+                (i, FrameData { h: off, pts: ref_pts.iter().map(|q| apply(&off, *q)).collect(), opacity: 1., guessed: false, score: 1. })
             })
             .collect();
         let load = |i: usize| Some(pyramid(frame(tex, &hs[i], 1.), p.search, p.pattern));
@@ -1348,8 +1529,26 @@ mod tests {
     }
 
     #[test]
+    fn one_part_of_the_motion_can_be_smoothed_or_retouched_alone() {
+        let c = [50., 50.];
+        let pose = |i: usize| {
+            let (turn, jolt) = (0.01 * i as f64, if i % 2 == 0 { 3. } else { -3. });
+            let lin = [turn.cos(), -turn.sin(), 0., turn.sin(), turn.cos(), 0., 0., 0., 1.];
+            Some(FrameData { h: mul(&translation(50. + 2. * i as f64 + jolt, 50.), &mul(&lin, &translation(-50., -50.))), pts: vec![], opacity: 1., guessed: false, score: 1. })
+        };
+        let frames: Vec<Option<FrameData>> = (0..40).map(pose).collect();
+        let eased = ease(&frames, c, [3., 0., 0.]);
+        let (raw, got) = (parts(&frames[20].as_ref().unwrap().h, c), parts(&eased[20].as_ref().unwrap().h, c));
+        assert!((got[0] - 90.).abs() < 0.4 && (raw[0] - 93.).abs() < 1e-3, "x lissé {} (brut {})", got[0], raw[0]);
+        assert!((got[3] - raw[3]).abs() < 1e-6 && (got[2] - 1.).abs() < 1e-6, "rotation et taille inchangées");
+        let moved = retouch(frames[5].as_ref().unwrap(), c, [10., 20., 2., 0.5]);
+        let p = parts(&moved.h, c);
+        assert!((p[0] - 10.).abs() < 1e-3 && (p[1] - 20.).abs() < 1e-3 && (p[2] - 2.).abs() < 1e-4 && (p[3] - 0.5).abs() < 1e-4, "{p:?}");
+    }
+
+    #[test]
     fn smoothing_keeps_linear_motion_and_damps_jitter() {
-        let mk = |x: f32| Some(FrameData { h: translation(x as f64, 0.), pts: vec![[x, 0.]], opacity: 1., guessed: false });
+        let mk = |x: f32| Some(FrameData { h: translation(x as f64, 0.), pts: vec![[x, 0.]], opacity: 1., guessed: false, score: 1. });
         let line: Vec<_> = (0..20).map(|i| mk(3. * i as f32)).collect();
         for (i, f) in smooth(&line, 2.).iter().enumerate() {
             assert!((f.as_ref().unwrap().pts[0][0] - 3. * i as f32).abs() < 1e-3);
