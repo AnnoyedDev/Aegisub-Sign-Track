@@ -347,10 +347,6 @@ impl Template {
         (cur, Match { h: *h, score: cos(&all), weakest, gain: (all[1] / all[2]).sqrt() })
     }
 
-    pub fn score(&self, b: &[Gray], h: &H) -> f32 {
-        self.look(b, h, 0, 0).1.score
-    }
-
     pub fn align(&self, b: &[Gray], start: &H, m: &Motion, top: usize) -> Match {
         let free = m.shear || m.perspective;
         let on = [m.translation, m.translation, m.scale || free, m.rotation || free, free, free, m.perspective, m.perspective];
@@ -1504,14 +1500,6 @@ mod tests {
         assert_eq!(out.len(), 8);
         let (got, want) = (out[7].map(&ref_pts, false, [100., 90.]), apply(&hs[7], [100., 90.]));
         assert!(dist(got, want) < 4., "{got:?} au lieu de {want:?}");
-    }
-
-    #[test]
-    fn a_template_scores_the_right_pose_above_a_shifted_one() {
-        let shape = [[130., 100.], [190., 100.], [190., 140.], [130., 140.]];
-        let (a, b) = (pyramid(frame(drawing, &IDENT, 1.), 24., 10), pyramid(frame(drawing, &translation(9., 4.), 1.), 24., 10));
-        let t = Template::new(&a, &shape, 10., &[]);
-        assert!(t.score(&b, &translation(9., 4.)) > 0.95 && t.score(&b, &IDENT) < 0.8, "{} / {}", t.score(&b, &translation(9., 4.)), t.score(&b, &IDENT));
     }
 
     #[test]

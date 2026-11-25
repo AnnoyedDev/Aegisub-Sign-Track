@@ -170,16 +170,6 @@ surface. The text follows, and the correction holds for the frames after it, goi
 frame, until the next correction. The corrected frames are listed under the buttons, with *Delete this
 one*. The attachment plane needs *Area* mode.
 
-*Next problem ▶* looks for the place to correct. It runs from the frame on screen, going away from the
-start frame, and stops at the first frame where the surface of the plane no longer looks like its last
-reference, meaning the start frame or the last correction. There it offers up to four coloured frames,
-*Tracking as it is*, *Plane realigned*, *Around the text* and *Wider search*, each with a likeness
-percentage. Click a frame to take it as the correction, and its corners can still be adjusted.
-*Tracking as it is* approves the frame without changing anything, which makes it the new reference.
-*Search here* makes the same offers on the frame on screen. Treat these frames as starting points. When
-the artwork was redrawn, none of them has to be exact, and on an object that swings the search may
-stop at every new pose.
-
 libass renders the text preview through ffmpeg, during playback as well, so you see what Aegisub will
 show. The font may differ if the style is unknown.
 

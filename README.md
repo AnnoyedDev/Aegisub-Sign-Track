@@ -161,16 +161,6 @@ texte suit, et la correction vaut pour les frames suivantes en s'éloignant de l
 jusqu'à la correction suivante. Les frames corrigées sont listées sous les boutons, avec *Effacer
 celle-ci*. Le plan d'attache demande le mode *Zone*.
 
-*Problème suivant ▶* cherche pour vous où corriger. Il avance depuis la frame affichée, en s'éloignant
-de la frame de départ, et s'arrête à la première frame où la surface du plan ne ressemble plus à sa
-dernière référence, qui est la frame de départ ou la dernière correction. Il y propose jusqu'à quatre
-cadres de couleur, *Suivi tel quel*, *Plan recalé*, *Autour du texte* et *Recherche élargie*, chacun
-avec un pourcentage de ressemblance. Un clic sur un cadre le prend comme correction, et ses coins
-restent ajustables. *Suivi tel quel* valide la frame sans rien changer, ce qui en fait la nouvelle
-référence. *Chercher ici* fait les mêmes propositions sur la frame affichée. Ces cadres sont des points
-de départ : quand le dessin a été refait, aucun n'est forcément exact, et sur un objet qui se balance
-la recherche peut s'arrêter à chaque nouvelle pose.
-
 L'aperçu du texte est rendu par libass (via ffmpeg), y compris pendant la lecture. Il montre ce
 qu'Aegisub affichera, à la police près si le style n'est pas connu.
 

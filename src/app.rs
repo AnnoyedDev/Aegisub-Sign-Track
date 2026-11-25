@@ -84,13 +84,6 @@ struct Worker {
     what: &'static str,
 }
 
-struct Hunt {
-    key: usize,
-    held: Option<(track::Template, track::H, f32)>,
-    at: i64,
-    step: i64,
-}
-
 struct Snap {
     zone: bool,
     shape: Vec<P>,
@@ -267,14 +260,10 @@ impl Object {
         (d > (hi[0] - lo[0]).max(hi[1] - lo[1]) / 2.).then_some(d)
     }
 
-    fn glue_key(&self, i: usize) -> Option<&(usize, track::H)> {
+    fn glue_at(&self, i: usize) -> track::H {
         let r = self.ref_frame;
         let found = if i >= r { self.glue.iter().filter(|g| (r..=i).contains(&g.0)).max_by_key(|g| g.0) } else { self.glue.iter().filter(|g| (i..r).contains(&g.0)).min_by_key(|g| g.0) };
-        found.filter(|_| !self.warp)
-    }
-
-    fn glue_at(&self, i: usize) -> track::H {
-        self.glue_key(i).map_or(track::IDENT, |g| g.1)
+        found.filter(|_| !self.warp).map_or(track::IDENT, |g| g.1)
     }
 
     fn level(&self) -> Option<(track::H, [f32; 4])> {
@@ -565,9 +554,6 @@ pub struct App {
     reshaped: f64,
     hush: bool,
     attach: u8,
-    hunt: Option<Hunt>,
-    offers: Vec<(&'static str, Color32, track::H, f32)>,
-    offers_at: usize,
     lost: Option<usize>,
     see: bool,
     tex_mark: u64,
@@ -701,9 +687,6 @@ impl App {
             reshaped: 0.,
             hush: false,
             attach: 0,
-            hunt: None,
-            offers: vec![],
-            offers_at: 0,
             lost: None,
             see: false,
             tex_mark: 0,
@@ -1439,100 +1422,6 @@ impl App {
         };
         let d = o.apart(&spots)?;
         Some(tf!("Le texte est à {:.0} px de la zone trackée. Le tracking n'est juste que là où se trouve la zone : si la surface ne bouge pas pareil sous le texte (pli, perspective qui change, dessin refait), le texte sera mal placé et tremblera. Tracez la zone là où est le texte.", "The text is {:.0} px away from the tracked area. Tracking is only right where the area is: if the surface moves differently under the text (a fold, a changing perspective, redrawn artwork), the text will be misplaced and will shake. Draw the area where the text is.", d))
-    }
-
-    fn pyr(&self, i: usize) -> Option<Vec<Gray>> {
-        let clip = self.clip.as_ref()?;
-        Some(track::pyramid(Gray::from_rgb(&clip.rgb(i).ok()?, clip.w, clip.h, Channel::Luma), 24., 10))
-    }
-
-    fn laid(&self, i: usize) -> Option<track::H> {
-        Some(track::mul(&self.shown.get(i)?.as_ref()?.h, &self.o.glue_at(i)))
-    }
-
-    fn sighting(&self, k: usize) -> Option<(track::Template, Vec<Gray>, track::H, f32)> {
-        if self.o.plane.len() != 4 || self.o.warp {
-            return None;
-        }
-        let r = self.o.glue_key(k).map_or(self.o.ref_frame, |g| g.0);
-        let (m, a) = (self.laid(r)?, self.pyr(r)?);
-        let tpl = track::Template::new(&a, &self.o.plane.iter().map(|v| track::apply(&m, *v)).collect::<Vec<_>>(), 10., &[]);
-        let base = tpl.score(&a, &track::IDENT);
-        Some((tpl, a, m, base))
-    }
-
-    fn propose(&mut self) {
-        let k = self.cur;
-        (self.offers, self.offers_at) = (vec![], k);
-        let (Some((tpl, a, m, base)), Some(b), Some(now), Some(h)) = (self.sighting(k), self.pyr(k), self.laid(k), self.shown.get(k).and_then(|f| Some(f.as_ref()?.h))) else {
-            self.status = t!("Pour chercher, il faut un plan d'attache posé et une frame trackée en mode Zone.", "Searching needs an attachment plane placed and a frame tracked in Area mode.").into();
-            return;
-        };
-        let all = moves(true, true, true);
-        let start = track::mul(&now, &track::inv(&m));
-        let quad: Vec<P> = self.o.plane.iter().map(|v| track::apply(&m, *v)).collect();
-        let c = export::centroid(&quad);
-        let reach = quad.iter().map(|v| (v[0] - c[0]).hypot(v[1] - c[1])).fold(0f32, f32::max);
-        let p = track::apply(&m, self.o.anchor_pt());
-        let s = (reach / 3.).max(40.);
-        let near = track::Template::new(&a, &[[p[0] - s, p[1] - s], [p[0] + s, p[1] - s], [p[0] + s, p[1] + s], [p[0] - s, p[1] + s]], 10., &[]);
-        let wide = tpl.search(&b, &start, &all, 20.).iter().map(|g| tpl.align(&b, g, &all, 9)).filter(|f| { let (q, w) = (track::apply(&f.h, c), track::apply(&start, c)); (q[0] - w[0]).hypot(q[1] - w[1]) <= reach }).max_by(|x, y| x.score.total_cmp(&y.score));
-        let found = [
-            (t!("Suivi tel quel", "Tracking as it is"), Color32::from_rgb(255, 70, 70), Some(start)),
-            (t!("Plan recalé", "Plane realigned"), Color32::from_rgb(255, 210, 0), Some(tpl.align(&b, &start, &all, 9).h)),
-            (t!("Autour du texte", "Around the text"), Color32::from_rgb(70, 230, 110), Some(near.align(&b, &start, &moves(true, false, false), 9).h)),
-            (t!("Recherche élargie", "Wider search"), Color32::from_rgb(90, 170, 255), wide.map(|f| f.h)),
-        ];
-        let mut seen: Vec<Vec<P>> = vec![];
-        for (name, ink, g) in found {
-            let Some(g) = g else { continue };
-            let at: Vec<P> = quad.iter().map(|v| track::apply(&g, *v)).collect();
-            if at.iter().all(|v| v[0].is_finite() && v[1].is_finite()) && seen.iter().all(|o| o.iter().zip(&at).any(|(x, y)| (x[0] - y[0]).hypot(x[1] - y[1]) > 1.5)) {
-                self.offers.push((name, ink, track::mul(&track::inv(&h), &track::mul(&g, &m)), tpl.score(&b, &g) / base.max(1e-6)));
-                seen.push(at);
-            }
-        }
-        self.attach = 2;
-    }
-
-    fn hunt_start(&mut self) {
-        if self.hunt.take().is_some() {
-            self.status = t!("Recherche arrêtée.", "Search stopped.").into();
-        } else if self.o.plane.len() != 4 || self.o.warp {
-            self.status = t!("Pour chercher, il faut un plan d'attache posé et une frame trackée en mode Zone.", "Searching needs an attachment plane placed and a frame tracked in Area mode.").into();
-        } else {
-            let step = if self.cur >= self.o.ref_frame { 1 } else { -1 };
-            self.hunt = Some(Hunt { key: usize::MAX, held: None, at: self.cur as i64 + step, step });
-        }
-    }
-
-    fn hunt_step(&mut self, ctx: &egui::Context) {
-        let Some(mut h) = self.hunt.take() else { return };
-        for _ in 0..3 {
-            let i = h.at as usize;
-            if h.at < 0 || !self.shown.get(i).is_some_and(Option::is_some) {
-                self.status = t!("Aucun problème trouvé jusqu'au bout du tracking.", "No problem found up to the end of the tracking.").into();
-                return;
-            }
-            let key = self.o.glue_key(i).map_or(self.o.ref_frame, |g| g.0);
-            if key != h.key || h.held.is_none() {
-                (h.key, h.held) = (key, self.sighting(i).map(|(t, _, m, base)| (t, track::inv(&m), base)));
-            }
-            let (Some((t, back, base)), Some(b), Some(now)) = (&h.held, self.pyr(i), self.laid(i)) else {
-                self.status = t!("Lecture de la vidéo impossible pendant la recherche.", "Cannot read the video during the search.").into();
-                return;
-            };
-            if i != key && t.align(&b, &track::mul(&now, back), &moves(true, true, true), 1).score < 0.85 * base {
-                self.cur = i;
-                self.propose();
-                self.status = tf!("Frame {} : le plan ne ressemble plus à sa référence. Prenez un des cadres proposés ou replacez les coins.", "Frame {}: the plane no longer looks like its reference. Take one of the offered frames or put the corners back.", i + 1);
-                return;
-            }
-            h.at += h.step;
-        }
-        self.status = tf!("Recherche d'un problème : frame {}...", "Looking for a problem: frame {}...", h.at + 1);
-        self.hunt = Some(h);
-        ctx.request_repaint();
     }
 
     fn halt_dialog(&mut self, ctx: &egui::Context) {
@@ -2609,29 +2498,6 @@ impl App {
                 (self.o.plane, self.o.glue, self.o.lay, self.attach) = (vec![], vec![], false, 0);
             }
         });
-        if self.offers_at != self.cur {
-            self.offers.clear();
-        }
-        ui.add_enabled_ui(self.o.plane.len() == 4, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button(if self.hunt.is_some() { t!("Arrêter", "Stop") } else { t!("Problème suivant ▶", "Next problem ▶") }).on_hover_text(t!("Avance depuis cette frame, en s'éloignant de la frame de départ, jusqu'à celle où le plan ne ressemble plus à sa dernière référence (frame de départ ou dernière correction), puis y propose des cadres.", "Runs from this frame, going away from the start frame, to the one where the plane no longer looks like its last reference (start frame or last correction), then offers frames there.")).clicked() {
-                    self.hunt_start();
-                }
-                if ui.button(t!("Chercher ici", "Search here")).on_hover_text(t!("Cherche sur cette frame où est passée la surface du plan, à partir du tracking et de la dernière référence, et propose plusieurs cadres.", "Looks on this frame for where the surface of the plane went, from the tracking and the last reference, and offers several frames.")).clicked() {
-                    self.propose();
-                }
-            });
-        });
-        if !self.offers.is_empty() {
-            ui.weak(t!("Cliquez sur un cadre pour le prendre comme correction ici, puis ajustez ses coins si besoin. « Suivi tel quel » valide la frame sans rien changer. Le pourcentage dit à quel point la surface ressemble à la référence.", "Click a frame to take it as the correction here, then adjust its corners if needed. \"Tracking as it is\" approves the frame without changing anything. The percentage says how much the surface looks like the reference."));
-        }
-        for (name, ink, d, score) in self.offers.clone() {
-            if ui.add(egui::Button::new(egui::RichText::new(format!("■ {name} ({:.0} %)", 100. * score)).color(ink))).clicked() {
-                self.checkpoint();
-                self.o.glue.retain(|g| g.0 != self.cur);
-                self.o.glue.push((self.cur, d));
-            }
-        }
         ui.add_enabled_ui(self.o.plane.len() == 4, |ui| {
             if ui.checkbox(&mut self.o.lay, t!("Coucher le texte sur le plan", "Lay the text on the plane")).on_hover_text(t!("Le texte prend la perspective du plan, et son haut se tourne vers le côté épais du cadre. Coche aussi tout ce que le texte suit du tracking.", "The text takes the perspective of the plane, and its top turns towards the thick side of the frame. Also ticks everything the text follows from the tracking.")).changed() && self.o.lay {
                 self.o.text_follow = Follow::ALL;
@@ -3131,11 +2997,6 @@ impl App {
                 }
             }
         }
-        if self.mode == Mode::Text && self.offers_at == self.cur {
-            for (_, ink, d, _) in &self.offers {
-                painter.add(Shape::closed_line(self.o.plane.iter().map(|v| scr(view.map(track::apply(d, *v)))).collect(), Stroke::new(2., *ink)));
-            }
-        }
         if self.mode == Mode::Text && self.attach > 0 {
             let ink = Color32::from_rgb(200, 130, 255);
             let plane: Vec<Pos2> = self.o.plane.iter().map(|v| scr(view.map(track::apply(&stick, *v)))).collect();
@@ -3492,7 +3353,6 @@ impl eframe::App for App {
         self.import_dialog(&ctx);
         self.resume_dialog(&ctx);
         self.halt_dialog(&ctx);
-        self.hunt_step(&ctx);
         self.update_dialog(&ctx);
     }
 
