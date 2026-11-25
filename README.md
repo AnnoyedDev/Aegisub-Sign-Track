@@ -1,260 +1,364 @@
+<div align="center">
+
+<img src="docs/logo.png" width="96" alt="">
+
 # AegiSignTrack
 
-**English: [README.en.md](README.en.md)**
+**Le tracking, le cache et le typeset d'un sign dans une seule fenêtre, pour Aegisub.**
 
-Outil de tracking, de compositing et de typesetting pour Aegisub : il suit un élément de la vidéo,
-puis fabrique les lignes ASS qui vont avec. Tout le travail sur un sign peut se faire au même endroit.
+**Français** | [English](README.en.md)
 
-- **Tracking** : suivi d'un point, de plusieurs points ou d'une zone, en déplacement, échelle, rotation,
-  perspective ou déformation : il peut prendre en compte les fondus (opacités), les objets cachés ou sortis de l'image.
-- **Cache** : masquage de la zone suivie par un aplat, des dégradés ou une image vectorisée (l'image vectorisée peut rendre le script **__EXTRÊMEMENT__** lourd).
-- **Sign / typeset** : texte posé sur la vidéo, avec police, couleurs, contour, ombre et flou, ou lignes
-  déjà écrites dans Aegisub qui reçoivent le mouvement.
-- **Export** : copie dans le presse-papiers ou envoi direct à Aegisub par le plugin.
-- **Export Basique** : Vous pouvez, si vous le souhaitez exporter simplement le tracking.
+[![Licence : CC BY-NC-SA 4.0](https://img.shields.io/badge/licence-CC%20BY--NC--SA%204.0-1689C6)](LICENSE)
 
-Deux morceaux qui travaillent ensemble :
+</div>
 
-- `aegisigntrack` : le logiciel (Rust, Linux et Windows).
-- `aegisub/aegisigntrack.lua` : le plugin Aegisub qui lui envoie la sélection et récupère le résultat.
+AegiSignTrack suit un élément de la vidéo et écrit les lignes ASS qui vont avec : un cache qui recouvre
+le sign d'origine, un texte posé dessus, ou le mouvement seul, appliqué à des lignes déjà écrites.
+
+Il se compose du logiciel `aegisigntrack` (Rust, Linux et Windows) et du plugin Aegisub
+`aegisub/aegisigntrack.lua`, qui lui envoie la sélection et récupère le résultat.
 
 Développé par AnnoyedDev.
 
+## Ce qu'il fait
+
+- Suivi d'un point, de plusieurs points ou d'une zone, en translation, échelle, rotation, cisaillement
+  ou perspective.
+- Prise en compte des fondus, des objets cachés, recouverts ou sortis de l'image, et des aplats sans
+  texture.
+- Cache en aplat, en dégradés ou à partir d'une image vectorisée. Une image peut rendre le script
+  **extrêmement** lourd.
+- Texte avec sa police, ses couleurs, son contour, son ombre et son flou, ou lignes déjà écrites dans
+  Aegisub qui reçoivent le mouvement.
+- Export dans le presse-papiers, directement dans Aegisub, en fichier `.ass` ou en données de tracking
+  pour d'autres outils.
+- Plusieurs objets suivis dans le même plan et exportés ensemble.
+
 ## Installation
 
-Il faut `ffmpeg` et `ffprobe` : dans le PATH, ou posés à côté de l'exécutable, ou dans un dossier indiqué
-avec *Dossier de ffmpeg...* en bas des réglages.
+1. Télécharger la dernière [release](https://github.com/AnnoyedDev/Aegisub-Sign-Track/releases).
+   L'archive contient l'exécutable (Linux ou Windows) et le plugin. Une release sort à chaque commit ;
+   son numéro, date et commit, s'affiche dans le titre de la fenêtre.
+2. Installer `ffmpeg` et `ffprobe` : dans le PATH, à côté de l'exécutable, ou dans un dossier indiqué
+   avec *Dossier de ffmpeg...*, en bas des réglages.
+3. Copier `aegisigntrack.lua` dans le dossier `automation/autoload` d'Aegisub :
+   `~/.aegisub/automation/autoload/` sous Linux, `%APPDATA%\Aegisub\automation\autoload\` sous Windows.
+4. Si `aegisigntrack` n'est pas dans le PATH, donner son emplacement dans Aegisub avec
+   *Automatisme > AegiSignTrack > Chemin du tracker*.
 
-Le plus simple : prendre la dernière release, qui contient l'exécutable (Linux ou Windows) et le plugin.
-Une release est publiée à chaque commit. Son numéro, date et commit, est aussi affiché dans le titre de
-la fenêtre.
+Sous Linux, AegiSignTrack crée à son lancement une entrée de menu et son icône dans `~/.local/share`
+(`applications/aegisigntrack.desktop` et `icons/aegisigntrack.png`). Les bureaux Wayland en ont besoin
+pour afficher l'icône de la fenêtre.
 
-Pour compiler soi-même :
-
-Téléchargez la dernière [release](https://github.com/AnnoyedDev/Aegisub-Sign-Track/releases) ou compilez vous même avec :
+### Compiler soi-même
 
 ```sh
 cargo build --release
 ```
 
-L'exécutable est `target/release/aegisigntrack`.
+L'exécutable est `target/release/aegisigntrack`. Sous Windows, installer d'abord Rust avec
+[rustup](https://rustup.rs) ; l'exécutable est alors `target\release\aegisigntrack.exe`.
 
-Pour Windows :
+Pour produire l'exécutable Windows depuis Linux, il faut `mingw-w64-gcc` :
 
-- sur Windows même : installer Rust (https://rustup.rs), puis `cargo build --release` dans ce dossier,
-  l'exécutable est `target\release\aegisigntrack.exe`.
-- depuis Linux : `rustup target add x86_64-pc-windows-gnu`, installer `mingw-w64-gcc`, puis
-  `cargo build --release --target x86_64-pc-windows-gnu`, l'exécutable est dans
-  `target/x86_64-pc-windows-gnu/release/aegisigntrack.exe`.
+```sh
+rustup target add x86_64-pc-windows-gnu
+cargo build --release --target x86_64-pc-windows-gnu
+```
 
-Copier `aegisub/aegisigntrack.lua` dans le dossier `automation/autoload` d'Aegisub
-(`~/.aegisub/automation/autoload/` sous Linux, `%APPDATA%\Aegisub\automation\autoload\` sous Windows).
-Si `aegisigntrack(.exe)` n'est pas dans le PATH, indiquer son emplacement dans Aegisub avec
-*Automatisme > AegiSignTrack > Chemin du tracker*.
+Le résultat est `target/x86_64-pc-windows-gnu/release/aegisigntrack.exe`.
 
 ## Utilisation
 
-**Depuis Aegisub** : sélectionner la ou les lignes, puis *Automatisme > AegiSignTrack > Tracker la
-sélection*. Le tracker s'ouvre sur la portion de vidéo couverte par les lignes. Une fois le
-tracking fait, *Envoyer à Aegisub* insère les lignes dans le script (annulable avec Ctrl+Z).
-ou vous pouvez simplement copier avec *Copier pour Aegisub* et coller là où vous le souhaitez.
+Depuis Aegisub, sélectionner les lignes du sign puis lancer *Automatisme > AegiSignTrack > Tracker la
+sélection*. Le tracker s'ouvre sur la portion de vidéo que ces lignes couvrent. Sans Aegisub, lancer
+`aegisigntrack`, ouvrir une vidéo (ou la glisser dans la fenêtre) et choisir la plage à charger.
 
-**À la main** : lancer `aegisigntrack(.exe)`, ouvrir une vidéo (ou la glisser dans la fenêtre), choisir la
-plage à charger. *Copier pour Aegisub* met les lignes dans le presse-papiers puis les coller dans la
-grille d'Aegisub.
+Le panneau de droite a trois onglets. Un clic sur la vidéo agit sur l'onglet affiché.
 
-Dans AegiSignTrack, le panneau de droite a trois modes : le clic sur la vidéo agit sur le mode affiché.
+![La fenêtre d'AegiSignTrack pendant que le sign entre dans l'image](docs/demo.webp)
 
-1. **Tracking** : choisir **Points** (1 point ou plus, chacun suivi individuellement) ou **Zone**
-   (polygone dont toute la surface est suivie), cliquer sur la vidéo pour dessiner la sélection, cocher
-   les mouvements à suivre et régler la recherche. Puis *Tracker ▶*, *◀ Tracker* ou *◀ Tout ▶* depuis la
-   frame affichée, la plage se règle avec `[` et `]`. Si le suivi dérape : se placer sur la frame
-   fautive, glisser la sélection au bon endroit, relancer de là.
-2. **Cache** : cocher *Exporter le cache*. Par défaut il reprend la sélection, cliquer sur la vidéo pour
-   en dessiner un autre où l'on veut, il suivra le tracking depuis cet endroit. Couleur (avec pipette sur
-   la vidéo) et flou. *Dégradés* : chaque dégradé fond sa couleur sur celle du cache, dans le sens et
-   avec la force choisis, plusieurs dégradés se superposent. *Image* : une image (PNG ou autre) prend
-   la place du cache, étirée sur le rectangle qui l'entoure.
-3. **Texte** : cocher *Exporter le texte*, cliquer sur la vidéo pour le placer. *Personnaliser
-   l'apparence* remplace le style de la ligne : police (liste des polices installées), taille, gras,
-   italique, couleur, contour, ombre, flou.
+*Le sign entre dans l'image à 50 px par image. La zone jaune, le cache et le texte le suivent, et les
+points verts dessinent la trajectoire de son centre.*
 
-Le cache et le texte sont décochés au départ. Si aucun des deux n'est coché, *Copier* et *Envoyer*
-demandent confirmation puis ne produisent que le tracking : chaque ligne sélectionnée garde son texte
-et sa position (`\pos`, sinon le centre de la zone) et reçoit position, taille et rotation frame par
-frame. Hors Aegisub, ce sont des lignes vides portant ces seules balises.
+### Tracking
 
-**Texte depuis Aegisub** : si les lignes sélectionnées contiennent du texte, AegiSignTrack demande au
-lancement s'il faut l'importer. *Texte importé* : chaque ligne garde son texte et son style, est suivie
-sur sa propre durée et remplacée par ses versions trackées (l'originale est mise en commentaire), toutes
-sont placées à l'endroit cliqué sur la vidéo. *Texte saisi ici* : les lignes ne servent qu'à délimiter la
-vidéo, et le texte tapé dans l'onglet Texte est ajouté à côté d'elles, sans les modifier. Le choix se
-change à tout moment dans l'onglet Texte.
+Choisir *Points* (un ou plusieurs, chacun suivi séparément) ou *Zone* (un polygone suivi sur toute sa
+surface), cliquer sur la vidéo pour dessiner la sélection, cocher les mouvements à suivre et régler la
+recherche. *Tracker ▶*, *◀ Tracker* et *◀ Tout ▶* partent de la frame affichée et s'arrêtent aux bornes
+de la plage. Les boutons `[` et `]` placent ces bornes sur la frame affichée.
 
-Le cache et le texte ont chacun leur liste *Ce qu'il suit du tracking* : déplacement, agrandissement,
-rotation, perspective, opacité. Un texte peut par exemple suivre seulement le déplacement pendant que le cache
-suit tout. Les deux peuvent être exportés ensemble.
+Si le suivi dérape, aller sur la frame fautive, glisser la sélection au bon endroit et relancer de là.
 
-Raccourcis : <- -> frame précédente / suivante, Espace lecture, Ctrl+Z annuler, Ctrl+Maj+Z rétablir,
-H masquer ou revoir les tracés, molette zoom, clic droit (ou clic molette) maintenu pour déplacer la vue.
+*Que suivez-vous ?* propose six profils : *Sign fixe*, *Défilement*, *Panneau vu de biais*, *Objet qui se
+déforme*, *Fondu* et *Page / volet*. Un clic coche les mouvements et les suivis qui conviennent, et
+chaque case reste modifiable ensuite. Les sections *Mouvement suivi*, *Autres suivis*, *Recherche* et
+*Réglages fins* se replient d'un clic sur leur titre ; repliées, elles affichent un résumé de leur état.
 
-**Objet qui apparaît d'un coup** : se placer sur une frame où il est bien visible,
-dessiner la zone, puis *◀ Tracker* pour remonter le temps.
+### Cache
 
-**Objet qui grossit beaucoup ou sort de l'image** (mode Zone) : quand trop de points sont perdus, le
-tracker en reprend automatiquement de nouveaux dans la partie de la zone encore visible et continue le
-même mouvement. Une zone presque entièrement sortie de l'image continue sur sa lancée.
+Cocher *Exporter le cache*. Il reprend la sélection du tracking. Un clic sur la vidéo en dessine un
+autre, qui suit le tracking depuis cet endroit.
 
-**Aplats de couleur, objets sans détails** : en mode Zone, dessiner la zone sur les bords de l'objet
-(ou juste autour). Le tracker aligne alors les contours de la zone sur ceux de la frame de départ, ce
-qui marche même sans texture. Le canal *Automatique* (par défaut) choisit le mélange de couleurs où la
-zone ressort le mieux : un objet de même luminosité que le décor reste suivi. Le bouton *Voir*, à côté de
-*Canal*, affiche la vidéo comme le tracker la voit, en niveaux de gris du canal choisi.
+| Réglage | Effet |
+|---|---|
+| Couleur | Aplat, avec une pipette sur la vidéo. *Reprendre la couleur à chaque frame* la relève au même endroit de l'objet sur chaque frame, pour un éclairage qui change |
+| Flou | *Mesurer* relève le flou des bords de l'objet sur la frame affichée et règle celui du cache en conséquence |
+| *Marge* | Élargit ou rétrécit le cache de quelques pixels sans le redessiner |
+| *Dégradés* | Chaque dégradé fond sa couleur sur celle du cache, dans le sens et avec la force choisis. Plusieurs dégradés se superposent |
+| Image | *Choisir une image...* met une image (PNG ou autre) à la place du cache, étirée sur le rectangle qui l'entoure. Un `.svg` garde ses formes telles quelles, sans vectorisation ; son texte et ses dégradés ne sont pas repris |
+| *Poser l'image sur les 4 points du cache* | Avec un cache d'exactement 4 points, place les coins de l'image dessus dans l'ordre des clics (haut gauche, haut droit, bas droit, bas gauche). L'image est en perspective dès la première frame |
+| *Calque +* | S'ajoute au numéro de calque de la ligne d'origine |
 
-**Objet caché ou sorti de l'image** (mode Zone, *Recaler* coché) : quand l'objet passe derrière autre
-chose, le tracker prolonge sa trajectoire (déplacement et rotation) et le reprend dès qu'il reparaît.
-S'il reste perdu plus de quelques frames, il est recherché dans toute l'image, dans une orientation et
-une taille proches de celles attendues. Les frames ainsi estimées sont en orange sur la timeline et
-comptées dans le message de fin : à vérifier, et à corriger à la main si besoin. Un objet identique
-qui passe par-dessus la cible peut tromper la reprise.
+### Texte
 
-**Suivi qui se décale peu à peu** : *Recaler sur la frame de départ* (coché par défaut, section
-Recherche) réaligne chaque frame sur celle où le tracking a commencé, pour que les petites erreurs ne
-s'additionnent pas. À décocher si l'objet change vraiment d'aspect en cours de route. Le bouton *Affiner* fait la même
-chose après coup sur toutes les frames suivies de la plage : utile sur un tracking déjà fait, ou après avoir replacé
-la sélection à la main.
+Cocher *Exporter le texte* et cliquer sur la vidéo pour le placer. *Personnaliser l'apparence* remplace
+le style de la ligne : police (parmi celles installées), taille, gras, italique, couleur, contour,
+ombre, flou.
 
-**Plusieurs objets** : la rangée *Objet 1, Objet 2, +* en haut des réglages. Chaque objet a son tracking,
-son cache et son texte ; les autres restent visibles en contour gris, et tous sont exportés ensemble.
+Si les lignes sélectionnées dans Aegisub contiennent du texte, AegiSignTrack demande au lancement s'il
+faut l'importer. Le choix se change ensuite dans l'onglet.
 
-**Vérifier et corriger un tracking** : le menu *Vue* propose *Verrouiller la vue sur l'objet* (l'objet
-reste fixe à l'écran, on voit tout de suite s'il glisse) et la *Courbe de confiance* au-dessus de la
-timeline. *◀ estimée* et *estimée ▶* sautent d'une frame orange à l'autre. Après avoir replacé à la main
-une frame orange, *Interpoler* refait un passage régulier entre les frames sûres, et *Affiner* le recale.
+- *Texte importé* : chaque ligne garde son texte et son style, est suivie sur sa propre durée, puis
+  remplacée par ses versions trackées. L'originale passe en commentaire. Toutes sont placées à
+  l'endroit cliqué sur la vidéo.
+- *Texte saisi ici* : les lignes ne servent qu'à délimiter la vidéo. Le texte tapé dans l'onglet est
+  ajouté à côté d'elles, sans les modifier.
 
-**Zone à ignorer** (mode Zone, avant de tracker) : entourer une partie de la zone qui s'anime ou
-n'appartient pas à l'objet ; elle ne compte plus dans le suivi.
+| Réglage | Effet |
+|---|---|
+| *Visible seulement dans le cache* | Découpe le texte avec la forme du cache (`\clip`) |
+| *Caché par le cache* | L'inverse (`\iclip`). Pour faire passer un texte derrière un personnage, dessiner le cache sur lui. Le cache suit le tracking et n'a pas besoin d'être exporté |
+| *Flouter aussi l'intérieur des lettres* | Exporte chaque ligne deux fois, le contour dessous et les lettres sans contour dessus. En ASS, le flou seul ne touche que l'extérieur du contour |
+| *Mesurer* | Donne au texte le flou des bords de l'objet suivi |
+| *Calque +* | Avec 1 ici et 0 pour le cache, le texte reste devant le cache même si les lignes sont triées ou déplacées dans Aegisub. À 0 partout, les calques ne changent pas |
 
-**Texte qui se déforme avec l'objet** : avec *Perspective et déformation* coché dans ce que suit le texte,
-l'export écrit `\fscx` et `\fscy` séparément, puis `\frx`, `\fry`, `\fax` et au besoin `\org` : le texte
-s'écrase, s'étire et se couche comme l'objet. Il faut que le tracking ait suivi cette déformation, donc
-*Cisaillement* ou *Perspective* coché dans l'onglet Tracking. L'aperçu du texte
-est rendu par libass (via ffmpeg), y compris pendant la lecture : c'est ce qu'Aegisub affichera, à la
-police près si le style n'est pas connu. Limite : un texte sur plusieurs lignes (`\N`) est un peu moins juste.
+L'aperçu du texte est rendu par libass (via ffmpeg), y compris pendant la lecture. Il montre ce
+qu'Aegisub affichera, à la police près si le style n'est pas connu.
 
-**Texte découpé par le cache** : dans l'onglet Texte, choisir *Visible seulement dans le cache* (`\clip`)
-ou *Caché par le cache* (`\iclip`). Pour faire passer un texte derrière un personnage, dessiner le cache
-sur lui : le cache suit le tracking et n'a pas besoin d'être exporté.
+### Ce que suivent le cache et le texte
 
-**Moins de lignes** : *Regrouper les mouvements réguliers* (menu *Options*) remplace, pour le texte, une
-suite de frames au mouvement régulier par une seule ligne avec `\move` et `\t`.
+Chacun a sa liste *Ce qu'il suit du tracking* : déplacement, agrandissement, rotation, perspective,
+opacité. Le texte peut par exemple suivre le déplacement seul pendant que le cache suit tout.
 
-**Avec Aegisub-Motion** : *Options > Données de tracking* copie le suivi de l'objet affiché au format
-« After Effects Keyframe Data ».
+Avec *Perspective et déformation* coché pour le texte, l'export écrit `\fscx` et `\fscy` séparément,
+puis `\frx`, `\fry`, `\fax` et au besoin `\org`. Le texte s'écrase, s'étire et se couche comme l'objet,
+à condition que le tracking ait suivi cette déformation, donc avec *Cisaillement* ou *Perspective*
+coché dans l'onglet Tracking. Un texte sur plusieurs lignes (`\N`) est un peu moins juste.
 
-**Image couchée sur un panneau** : si le cache a exactement 4 points, *Poser l'image sur les 4 points du
-cache* place les coins de l'image dessus, dans l'ordre des clics (haut gauche, haut droit, bas droit, bas
-gauche) ; l'image est alors en perspective dès la première frame.
+### Export
 
-**Objet qui s'écrase, s'étire ou se voit de biais** : cocher *Cisaillement* (ou *Perspective*) avant de
-tracker. Sans cela le suivi décroche dès que l'objet se déforme, et le message de fin le signale.
+*Envoyer à Aegisub* insère les lignes dans le script, et un Ctrl+Z dans Aegisub annule l'insertion.
+*Copier pour Aegisub* les met dans le presse-papiers, à coller dans la grille. Le cache et le texte
+peuvent être exportés ensemble.
 
-**SVG** : *Choisir une image...* accepte aussi un `.svg`. Ses formes sont reprises telles quelles, sans
-vectorisation ni perte ; le texte et les dégradés du SVG ne sont pas repris.
+Les deux sont décochés au départ. Si aucun n'est coché, l'export demande confirmation puis ne produit
+que le tracking : chaque ligne sélectionnée garde son texte et sa position (`\pos`, sinon le centre de
+la zone) et reçoit position, taille et rotation frame par frame. Hors Aegisub, ce sont des lignes vides
+qui ne portent que ces balises.
 
-**Couleur du cache qui suit l'éclairage** : après avoir pris la couleur avec la pipette, cocher *Reprendre
-la couleur à chaque frame* ; elle est relevée au même endroit de l'objet sur chaque frame.
+Avant de copier ou d'envoyer, un récapitulatif donne pour chaque objet le nombre de lignes du cache et
+du texte, les frames suivies et les frames estimées à vérifier, puis le total, le poids ajouté au script
+et ce que la fusion et le regroupement font gagner. Deux réglages n'existent que là :
 
-**Réglages et session** : les réglages sont enregistrés à la fermeture et à l'export, puis retrouvés quand
-on rouvre le même script Aegisub (ou la même vidéo hors Aegisub). Le travail lui-même (objets, zones,
-caches, tracking) est enregistré aussi : en rouvrant la même vidéo sur la même plage, AegiSignTrack
-propose de le reprendre ou de repartir de zéro. L'image d'un cache n'est pas conservée, et une session
-vieille de plus de 30 jours est effacée.
+- *Mettre les lignes d'origine en commentaire* (texte importé, envoi à Aegisub). Décoché, les lignes
+  d'origine sont supprimées et remplacées par leurs versions trackées.
+- *Ranger chaque objet dans son propre calque* ajoute 2 au numéro de calque à chaque objet.
 
-**Changements de plan** : lancé depuis Aegisub, le tracker reçoit ses keyframes, affichées en traits blancs
-sur la timeline, et le tracking s'y arrête au lieu de traverser un cut. *Options > S'arrêter aux
-changements de plan* pour le laisser passer.
+*Options > Récapitulatif avant l'export* le désactive.
 
-**Sign qui sort de l'image ou se fond** : régler la plage sur les frames à couvrir, puis *Avancé >
-Extrapoler*. Les frames non suivies avant et après le tracking sont remplies en prolongeant son
-mouvement ; elles sont en orange, comme les frames estimées.
+![Le récapitulatif affiché avant l'envoi à Aegisub](docs/recap.webp)
 
-**Courbes du tracking** (menu *Avancé*) : une fenêtre montre la position, la taille et la rotation dans
-le temps. On peut y lisser une seule composante (la rotation qui tremble, par exemple, sans toucher à la
-position) et retoucher au chiffre près la frame affichée. Fenêtre fermée et curseurs à 0, rien ne change.
+Le menu *Options* propose d'autres sorties et deux réglages qui allègent le script :
 
-**Tracking fait ailleurs** : *Avancé > Importer des données de tracking...* lit un fichier « After Effects
-Keyframe Data » venu de Mocha, d'After Effects ou de Blender (position, taille, rotation, ou les 4 coins
-Power Pin) et l'applique à l'objet affiché à partir du début de la plage. Le cache, les dégradés et le
-texte s'utilisent ensuite comme après un tracking normal.
+| Entrée | Effet |
+|---|---|
+| *Enregistrer en .ass...* | Écrit un fichier complet, en-tête et styles compris |
+| *Données de tracking* | Copie le suivi de l'objet affiché au format « After Effects Keyframe Data », celui que lit Aegisub-Motion |
+| *Données Power Pin* | Copie les 4 coins du cache frame par frame, pour les scripts de perspective |
+| *Fusionner les frames immobiles* | Tant que le cache ou le texte ne bouge pas (à 0,15 px près), une seule ligne couvre toute la durée. Décocher pour garder une ligne par frame |
+| *Regrouper les mouvements réguliers* | Pour le texte, remplace une suite de frames au mouvement régulier par une seule ligne avec `\move` et `\t` |
 
-**Fondre le cache et le texte dans l'image** : *Mesurer*, à côté du flou, relève le flou des bords de
-l'objet sur la frame affichée et règle le flou en conséquence. *Marge* élargit ou rétrécit le cache de
-quelques pixels sans le redessiner. Pour un texte à contour, *Flouter aussi l'intérieur des lettres*
-exporte chaque ligne deux fois (le contour dessous, les lettres sans contour dessus), parce qu'en ASS le
-flou seul ne touche que l'extérieur du contour.
+Un dégradé ajoute une ligne par bande et par frame (16 bandes par défaut). Une image ajoute une ligne
+par couleur et par frame, et chacune contient tout le contour de cette couleur. L'image est donc
+réduite à 200 px de côté et à quelques couleurs avant d'être convertie en formes. Ça pourra changer,
+mais je doute que vous ayez envie d'un .ass de 1 Go et d'un Aegisub qui rame.
 
-**Autres sorties** (menu *Options*) : *Enregistrer en .ass...* écrit un fichier complet, en-tête et styles
-compris. *Données Power Pin* copie les 4 coins du cache frame par frame, pour les scripts de perspective.
+### Raccourcis
 
-**Couleurs de la timeline** : vert, frame suivie ; orange, frame estimée (objet perdu ou caché, position
-prolongée) ; gris, frame où l'objet est recouvert. Le vert et l'orange sont exportés, le gris ne l'est pas.
+| Touche | Action |
+|---|---|
+| ← et →, ou Alt+Q et Alt+D | Frame précédente, frame suivante |
+| Espace ou Ctrl+Espace | Lecture, pause |
+| Ctrl+Z, Ctrl+Maj+Z | Annuler, rétablir |
+| H | Masquer ou revoir les tracés |
+| Molette | Zoom |
+| Clic droit ou clic molette maintenu | Déplacer la vue |
 
-**Objet recouvert peu à peu** (page qui se tourne, volet, personnage qui passe devant) : sous *Autres
-suivis*, régler *Recouvrement*. AegiSignTrack compare les couleurs de la zone à celles de la frame de
-départ, coupe le cache et le texte le long du bord qui les recouvre (un `\clip` par frame), et n'exporte
-plus l'objet quand il est entièrement recouvert : ces frames sont grises sur la timeline. Sur la vidéo, le
-contour de la zone montre la partie encore visible, et « recouvert » quand il n'en reste rien.
-*Passage* : ce qui est recouvert peut revenir. *Définitif* : ce qui a été recouvert le reste, même si
-quelque chose de ressemblant apparaît ensuite au même endroit (la page suivante d'un livre, par exemple).
-*Tolérance* règle l'écart de couleur accepté. Limites : mode Zone seulement ; le bord est supposé droit ;
-un fondu ou un éclairage qui change est pris pour un recouvrement ; un texte réglé sur *Caché par le
-cache* n'est pas coupé (mais il disparaît bien quand l'objet est recouvert).
+Les touches sont ignorées pendant la saisie dans un champ.
 
-**Mouvement sur un seul axe** : sous *Translation*, *Axe* vaut *Libre* par défaut. *Horizontal* ou
-*Vertical* interdit tout déplacement dans l'autre sens : le centre de l'objet y reste figé, sans le
-moindre tremblement, y compris quand l'objet est caché et que sa trajectoire est prolongée. À réserver
-aux mouvements vraiment droits (générique qui défile, panoramique) : si l'objet bouge aussi dans l'autre
-sens, le tracking sera faux. Pour un mouvement purement droit, décocher aussi *Échelle* et *Rotation*.
+## Cas difficiles
 
-**Calques** : *Calque +* (onglets Cache et Texte) s'ajoute au numéro de calque de la ligne d'origine.
-Avec 0 pour le cache et 1 pour le texte, le texte reste devant le cache même si les lignes sont triées
-ou déplacées dans Aegisub. À 0 partout, rien ne change par rapport à avant.
+| Situation | Quoi faire |
+|---|---|
+| Il traverse l'image très vite | Dessiner la zone sur une image où il est entier, de préférence immobile, régler *Recherche* sur *Grand*, puis *◀ Tout ▶*. Le curseur monte jusqu'à 600 px. Au-delà de 96 px son libellé rougit, parce que le suivi ralentit et risque davantage d'accrocher un objet ressemblant. Sur l'image où il entre à peine dans le champ, il reste trop peu de l'objet pour le suivre |
+| L'objet apparaît d'un coup | Se placer sur une frame où il est bien visible, dessiner la zone, puis *◀ Tracker* pour remonter le temps |
+| Aplat de couleur, objet sans détails | Mode *Zone*, tracée sur les bords de l'objet ou juste autour : le tracker aligne les contours sur ceux de la frame de départ, même sans texture. Le canal *Automatique* (par défaut) choisit le mélange de couleurs où la zone ressort le mieux, ce qui permet de suivre un objet de même luminosité que le décor. *Voir*, à côté de *Canal*, montre la vidéo comme le tracker la voit, en niveaux de gris |
+| Il grossit beaucoup ou sort de l'image | Mode *Zone* : quand trop de points sont perdus, le tracker en reprend dans la partie encore visible et continue le même mouvement. Une zone presque entièrement sortie continue sur sa lancée |
+| Il s'écrase, s'étire ou se voit de biais | Cocher *Cisaillement* ou *Perspective* avant de tracker. Sans cela le suivi décroche dès que l'objet se déforme, et le message de fin le signale |
+| Sa surface se plie | *Mesh* suit une grille de points un par un, et la sélection se déforme avec la surface |
+| Il passe derrière autre chose | Mode *Zone* avec *Recaler sur la frame de départ* coché : le tracker prolonge la trajectoire (déplacement et rotation) et reprend l'objet dès qu'il reparaît. Perdu plus de quelques frames, l'objet est recherché dans toute l'image, à une orientation et une taille proches de celles attendues. Un objet identique qui passe sur la cible peut tromper la reprise |
+| Quelque chose le recouvre peu à peu | Régler *Recouvrement* (voir plus bas) |
+| Il apparaît ou disparaît en fondu | Cocher *Opacité* sous *Autres suivis* avant de tracker, en partant d'une frame où la zone est bien visible. La sélection reste en place quand elle devient invisible, et *Opacité (fondus)* se coche pour le cache et le texte, qui reçoivent `\alpha` frame par frame. Cette case se règle aussi séparément dans la liste de chacun |
+| Le suivi se décale peu à peu | *Recaler sur la frame de départ* (coché par défaut, section Recherche) réaligne chaque frame sur celle où le tracking a commencé, ce qui empêche les petites erreurs de s'additionner. À décocher si l'objet change vraiment d'aspect en cours de route. *Affiner* fait le même recalage après coup sur les frames suivies de la plage, par exemple après avoir replacé la sélection à la main |
+| Une partie de la zone s'anime ou n'appartient pas à l'objet | *Zone à ignorer*, en mode *Zone* et avant de tracker : la partie entourée ne compte plus dans le suivi |
+| Le mouvement est parfaitement droit | Sous *Translation*, régler *Axe* sur *Horizontal* ou *Vertical* : le centre de l'objet reste figé sur l'autre axe, sans aucun tremblement, même quand l'objet est caché et sa trajectoire prolongée. Décocher aussi *Échelle* et *Rotation*. À réserver aux génériques qui défilent et aux panoramiques : si l'objet bouge aussi dans l'autre sens, le tracking sera faux |
+| Le plan change | Lancé depuis Aegisub, le tracker reçoit ses keyframes, affichées en traits blancs sur la timeline, et le tracking s'y arrête. Décocher *Options > S'arrêter aux changements de plan* pour le laisser traverser |
+| Le sign sort de l'image ou se fond avant la fin | Régler la plage sur les frames à couvrir, puis *Avancé > Extrapoler*. Les frames non suivies avant et après le tracking sont remplies en prolongeant son mouvement, et marquées en orange |
 
-**Comparer avec l'image d'origine** : la touche H (ou *Vue > Masquer les tracés*) n'affiche plus que la
-vidéo. *Vue > Lecture en boucle sur la plage* fait repartir la lecture au début de la plage.
+### Recouvrement
 
-**Loupe** (menu *Vue*) : un agrandissement de la vidéo autour du pointeur, pour poser un point au pixel près.
+Pour une page qui se tourne, un volet ou un personnage qui passe devant, régler *Recouvrement* sous
+*Autres suivis*, en mode *Zone*. AegiSignTrack compare les couleurs de la zone à celles de la frame de
+départ, coupe le cache et le texte le long du bord qui les recouvre (un `\clip` par frame) et n'exporte
+plus l'objet une fois qu'il est entièrement recouvert. Sur la vidéo, le contour de la zone montre la
+partie encore visible, puis « recouvert » quand il n'en reste rien.
 
-**Langue** : *Options > Langue / Language*, français ou anglais. Au premier lancement, c'est la langue
-du système qui décide. Le plugin Aegisub suit ce choix au démarrage suivant d'Aegisub.
+| Mode | Comportement |
+|---|---|
+| *Ignorer* | Aucune détection (par défaut) |
+| *Passage* | Ce qui est recouvert peut revenir |
+| *Définitif* | Ce qui a été recouvert le reste, même si quelque chose de ressemblant apparaît ensuite au même endroit, comme la page suivante d'un livre |
 
-**Mises à jour** : au lancement, AegiSignTrack regarde si une release plus récente existe sur GitHub et
-affiche la version installée et la nouvelle, avec un bouton vers la page de téléchargement. Rien n'est
-installé tout seul. Il faut `curl` (fourni avec Windows 10 et 11). Se désactive dans le menu *Options*.
+*Tolérance* règle l'écart de couleur accepté. Le bord est supposé droit, et un fondu ou un éclairage qui
+change est pris pour un recouvrement. Un texte réglé sur *Caché par le cache* n'est pas coupé, mais il
+disparaît bien quand l'objet est recouvert.
 
-**Frames immobiles** : tant que le cache ou le texte ne bouge pas (à 0,15 px près), l'export ne fait
-qu'une seule ligne qui dure tout ce temps, au lieu d'une ligne par frame. Décocher *Fusionner les
-frames immobiles* (menu *Options*) pour garder une ligne par frame.
+## Vérifier et corriger
 
-**Poids de l'export** : un dégradé ajoute une ligne par bande et par frame (16 bandes par défaut), une
-image une ligne par couleur et par frame, chacune contenant tout le contour de cette couleur. L'image
-est réduite à 200 px de côté et à quelques couleurs avant d'être convertie en formes, sujet à changements
-mais je ne pense pas que vous être prêts à vous retrouver avec un .ass de 1Go et Aegisub qui lag comme
-pas possible.
+La timeline a une piste par objet. Un clic sur une piste affiche cet objet à la frame cliquée. Chaque
+frame y a une couleur :
 
-**Couleurs** : *Matrice couleur* (en haut des réglages) force BT.709 ou BT.601 si l'image ou la pipette
-ne donnent pas les bonnes couleurs.
+| Couleur | Frame | Exportée |
+|---|---|---|
+| Vert | Suivie | Oui |
+| Orange | Estimée : objet perdu ou caché, position prolongée | Oui |
+| Gris | Objet recouvert | Non |
 
-**Fondus** : cocher *Opacité* (sous *Autres suivis*, onglet Tracking) avant de lancer le tracking, en partant d'une frame où la zone
-est bien visible. Le tracker garde alors la sélection en place quand elle devient invisible, et coche
-*Opacité (fondus)* pour le cache et le texte, qui reçoivent `\alpha` frame par frame. Cette case se
-règle aussi séparément pour chacun, dans sa liste *Ce qu'il suit du tracking*.
+Les frames orange sont comptées dans le message de fin et méritent un coup d'œil. *◀ estimée* et
+*estimée ▶* sautent de l'une à l'autre. Après en avoir replacé une à la main, *Interpoler* refait un
+passage régulier entre les frames sûres, et *Affiner* le recale.
 
-**Résultat différent d'une machine à l'autre** : comparer d'abord la version affichée dans le titre de
-la fenêtre (date et commit). Si elle est la même, refaire le tracking avec les mêmes gestes sur les deux
-machines, cliquer sur *Options > Diagnostic...* et comparer les deux fichiers : version de ffmpeg,
-empreintes des images décodées, réglages, sélection, puis le résultat frame par frame.
+Un losange blanc marque une frame corrigée à la main. Un clic droit dessus permet de s'y rendre ou de
+supprimer la correction : la frame redevient estimée, et *Interpoler* peut la recalculer.
+
+Le menu *Vue* aide à juger un tracking :
+
+- *Verrouiller la vue sur l'objet* garde l'objet fixe à l'écran, et un glissement se voit tout de suite.
+- La *Courbe de confiance*, affichée par défaut, court sous la piste de l'objet affiché. Elle est verte
+  quand le suivi est sûr et vire au jaune, à l'orange puis au rouge quand la confiance baisse.
+- *Grille sur l'objet* pose une grille sur le plan suivi (mode *Zone*). Si elle glisse sur l'objet
+  pendant la lecture, le tracking glisse.
+- *Trajectoire du centre*, affichée par défaut, dessine un point par frame, coloré comme la courbe de
+  confiance, ou orange quand la frame est estimée. Dans l'onglet
+  Tracking, un clic sur un point mène à sa frame, et le tirer la corrige. Les frames voisines suivent en
+  douceur, sur le nombre de frames réglé par *Voisines entraînées* (6 de chaque côté par défaut).
+- *Vue redressée* ouvre une fenêtre où l'objet est vu de face et immobile, quelle que soit la frame. Si
+  l'image y bouge pendant la lecture, le tracking est à reprendre. Dans l'onglet Texte, un clic dans
+  cette fenêtre place le texte bien droit.
+- La *Loupe* agrandit la vidéo autour du pointeur, pour poser un point au pixel près.
+- *Masquer les tracés* (touche H) ne laisse que la vidéo, pour comparer avec l'image d'origine.
+- *Lecture en boucle sur la plage* fait repartir la lecture au début de la plage.
+
+![La vue redressée, en bas à gauche de la fenêtre](docs/verification.webp)
+
+*Le panneau bleu est vu de biais dans la vidéo. En bas à gauche, la vue redressée le montre de face.*
+
+Le menu *Avancé* sert à retoucher ou à remplacer le tracking :
+
+- *Courbes du tracking* montre la position, la taille et la rotation dans le temps. On peut y lisser
+  une seule composante (une rotation qui tremble, sans toucher à la position) et retoucher au chiffre
+  près la frame affichée. Fenêtre fermée et curseurs à 0, rien ne change.
+- *Importer des données de tracking...* lit un fichier « After Effects Keyframe Data » venu de Mocha,
+  d'After Effects ou de Blender (position, taille, rotation, ou les 4 coins Power Pin) et l'applique à
+  l'objet affiché à partir du début de la plage. Cache, dégradés et texte s'utilisent ensuite comme
+  après un tracking normal.
+
+## Autres réglages
+
+### Plusieurs objets
+
+La rangée *Objet 1, Objet 2, +* se trouve en haut des réglages, avec un champ pour nommer l'objet
+affiché. Le nom apparaît sur sa piste et dans le récapitulatif d'export. Chaque objet a son tracking,
+son cache et son texte. Les autres restent visibles en contour gris, et tous sont exportés ensemble.
+
+### Réglages et session
+
+Les réglages sont enregistrés à la fermeture et à l'export, puis retrouvés quand on rouvre le même
+script Aegisub, ou la même vidéo hors Aegisub. Le travail (objets, zones, caches, tracking) est
+enregistré aussi : en rouvrant la même vidéo sur la même plage, AegiSignTrack propose de le reprendre
+ou de repartir de zéro. L'image d'un cache n'est pas conservée, et une session de plus de 30 jours est
+effacée.
+
+### Langue
+
+*Options > Langue / Language*, français ou anglais. Au premier lancement, la langue du système décide.
+Le plugin suit ce choix au démarrage suivant d'Aegisub.
+
+### Mises à jour
+
+Au lancement, AegiSignTrack regarde si une release plus récente existe sur GitHub. Il affiche alors la
+version installée et la nouvelle, avec un bouton vers la page de téléchargement. Rien ne s'installe
+tout seul. Il faut `curl`, fourni avec Windows 10 et 11. La vérification se désactive dans le menu
+*Options*.
+
+### Couleurs
+
+Si l'image ou la pipette ne donnent pas les bonnes couleurs, *Matrice couleur*, en haut des réglages,
+force BT.709 ou BT.601.
+
+### Résultat différent d'une machine à l'autre
+
+Comparer d'abord la version affichée dans le titre de la fenêtre. Si elle est la même, refaire le
+tracking avec les mêmes gestes sur les deux machines, enregistrer *Options > Diagnostic...* et comparer
+les deux fichiers : version de ffmpeg, empreintes des images décodées, réglages, sélection, puis
+résultat frame par frame.
+
+## Exemples
+
+Ces animations viennent de deux séries de vidéos de test. La zone suivie est tracée en jaune. Elle passe
+à l'orange quand la position est estimée, parce que l'objet est caché ou hors champ.
+
+<table>
+<tr>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-01.webp" width="210" alt="Translation"><br><sub>Translation</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-02.webp" width="210" alt="Trajectoire courbe, accélérations"><br><sub>Trajectoire courbe, accélérations</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-03.webp" width="210" alt="Échelle"><br><sub>Échelle</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-04.webp" width="210" alt="Rotation"><br><sub>Rotation</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-05.webp" width="210" alt="Fondu"><br><sub>Fondu</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-06.webp" width="210" alt="Translation, échelle, rotation et fondu"><br><sub>Translation, échelle, rotation et fondu</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-07.webp" width="210" alt="Perspective sur fond vidéo"><br><sub>Perspective sur fond vidéo</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/1-08.webp" width="210" alt="Occultation et sortie de cadre"><br><sub>Occultation et sortie de cadre</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-01.webp" width="210" alt="Translation"><br><sub>Translation</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-02.webp" width="210" alt="Balancier"><br><sub>Balancier</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-03.webp" width="210" alt="Objet qui s'écrase, avec Cisaillement"><br><sub>Objet qui s'écrase, avec Cisaillement</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-06.webp" width="210" alt="Objet qui entre et sort, suivi à rebours"><br><sub>Objet qui entre et sort, suivi à rebours</sub></td>
+</tr>
+<tr>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-08.webp" width="210" alt="Livre en perspective"><br><sub>Livre en perspective</sub></td>
+<td align="center" valign="top" width="25%"><img src="docs/exemples/2-09.webp" width="210" alt="Lanterne, caméra à l'épaule"><br><sub>Lanterne, caméra à l'épaule</sub></td>
+</tr>
+</table>
+
+Sept cas des mêmes séries ne figurent pas ici. Dans cinq d'entre eux le suivi décroche encore par
+moments : des leurres identiques à la cible, une vidéo qui cumule toutes les difficultés, un éventail
+articulé qui se referme, deux objets filmés caméra à l'épaule et un magazine plié en main. Les deux
+autres, une bulle qui gonfle et un objet trop gros qui rétrécit, sont suivis mais demandent des
+retouches à la main.
 
 ## Tests
 
@@ -262,9 +366,9 @@ empreintes des images décodées, réglages, sélection, puis le résultat frame
 cargo test --release
 ```
 
-Les tests couvrent le tracking, l'export ASS et l'extraction vidéo. Ils utilisent ffmpeg.
+Les tests couvrent le tracking, l'export ASS et l'extraction vidéo. Ils ont besoin de ffmpeg.
 
 ## Licence
 
-CC BY-NC-SA 4.0 - Copyright 2026 AnnoyedDev. Usage commercial interdit, toute version modifiée qui est
-diffusée doit l'être sous la même licence. Texte complet dans `LICENSE`.
+CC BY-NC-SA 4.0, copyright 2026 AnnoyedDev. L'usage commercial est interdit, et toute version modifiée
+qui est diffusée doit l'être sous la même licence. Le texte complet est dans `LICENSE`.

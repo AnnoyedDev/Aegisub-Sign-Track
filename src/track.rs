@@ -1135,6 +1135,15 @@ pub fn ease(frames: &[Option<FrameData>], centre: P, sigma: [f32; 3]) -> Vec<Opt
     out
 }
 
+pub fn tug(frames: &mut [Option<FrameData>], at: usize, delta: P, reach: usize) {
+    for (i, f) in frames.iter_mut().enumerate().filter_map(|(i, f)| Some((i, f.as_mut()?))).filter(|(i, _)| i.abs_diff(at) <= reach) {
+        let w = 0.5 + 0.5 * (std::f32::consts::PI * i.abs_diff(at) as f32 / (reach + 1) as f32).cos();
+        let d = [delta[0] * w, delta[1] * w];
+        f.pts.iter_mut().for_each(|p| *p = [p[0] + d[0], p[1] + d[1]]);
+        f.h = mul(&translation(d[0] as f64, d[1] as f64), &f.h);
+    }
+}
+
 pub fn smooth(frames: &[Option<FrameData>], sigma: f32) -> Vec<Option<FrameData>> {
     let mut out = frames.to_vec();
     if sigma <= 0. {
@@ -1181,6 +1190,17 @@ pub fn smooth(frames: &[Option<FrameData>], sigma: f32) -> Vec<Option<FrameData>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn neighbours_follow_a_corrected_frame() {
+        let still = FrameData { h: IDENT, pts: vec![[5., 5.]], opacity: 1., guessed: false, score: 1. };
+        let mut frames = vec![Some(still); 9];
+        frames[6] = None;
+        tug(&mut frames, 4, [10., -4.], 2);
+        let moved: Vec<f32> = frames.iter().map(|f| f.as_ref().map_or(-1., |f| (apply(&f.h, [0., 0.])[0] * 100.).round() / 100.)).collect();
+        assert_eq!(moved, [0., 0., 2.5, 7.5, 10., 7.5, -1., 0., 0.]);
+        assert_eq!(frames[3].as_ref().unwrap().pts[0].map(|v| (v * 100.).round() / 100.), [12.5, 2.]);
+    }
 
     fn lattice(i: i32, j: i32, seed: u32) -> f32 {
         let mut h = (i as u32).wrapping_mul(0x9E37_79B1) ^ (j as u32).wrapping_mul(0x85EB_CA6B) ^ seed;

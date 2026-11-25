@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<g id="triangles" stroke="#0B0F14" stroke-width="26" stroke-linejoin="round">
+  <path d="M512,512 L120.6,286.0 L512.0,60.0 Z" fill="#1F9BD8"/>
+  <path d="M512,512 L512.0,60.0 L903.4,286.0 Z" fill="#1689C6"/>
+  <path d="M512,512 L903.4,286.0 L903.4,738.0 Z" fill="#0A5C92"/>
+  <path d="M512,512 L903.4,738.0 L512.0,964.0 Z" fill="#084B7C"/>
+  <path d="M512,512 L512.0,964.0 L120.6,738.0 Z" fill="#0C6CA6"/>
+  <path d="M512,512 L120.6,738.0 L120.6,286.0 Z" fill="#0E7AB8"/>
+</g>
+<g id="oeil"><path d="M232,512 Q512,232 792,512 Q512,792 232,512 Z" fill="#F3FBF7" stroke="#0B0F14" stroke-width="26" stroke-linejoin="round"/><circle cx="512" cy="512" r="104" fill="#10B981" stroke="#065F46" stroke-width="18"/><circle cx="512" cy="512" r="44" fill="#0B0F14"/><circle cx="478" cy="476" r="20" fill="#FFFFFF"/></g>
+<g id="viseur" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M834,512 L904,512 M190,512 L120,512 M512,712 L512,812 M512,312 L512,212 M652,762 L762,762 L762,652 M652,262 L762,262 L762,372 M372,762 L262,762 L262,652 M372,262 L262,262 L262,372" stroke="#0B0F14" stroke-width="46"/><path d="M834,512 L904,512 M190,512 L120,512 M512,712 L512,812 M512,312 L512,212 M652,762 L762,762 L762,652 M652,262 L762,262 L762,372 M372,762 L262,762 L262,652 M372,262 L262,262 L262,372" stroke="#B6F23A" stroke-width="24"/></g>
+</svg>

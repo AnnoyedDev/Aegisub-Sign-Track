@@ -10,6 +10,15 @@ fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs");
     println!("cargo:rerun-if-env-changed=AEGISIGNTRACK_VERSION");
+    println!("cargo:rerun-if-changed=docs/logo.ico");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+        let out = std::env::var("OUT_DIR").unwrap_or_default();
+        let (rc, res) = (format!("{out}/icon.rc"), format!("{out}/icon.o"));
+        let tool = if cfg!(windows) { "windres" } else { "x86_64-w64-mingw32-windres" };
+        if std::fs::write(&rc, "1 ICON \"docs/logo.ico\"\n").is_ok() && Command::new(tool).args([rc.as_str(), "-O", "coff", "-o", res.as_str()]).status().is_ok_and(|s| s.success()) {
+            println!("cargo:rustc-link-arg-bins={res}");
+        }
+    }
     let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
     let z = s / 86400 + 719468;
     let (era, doe) = (z.div_euclid(146097), z.rem_euclid(146097));

@@ -145,8 +145,9 @@ local function track(subs, sel)
         end
         aegisub.cancel()
     end
-    local generated = {}
+    local generated, delete = {}, false
     for row in result:lines() do
+        delete = delete or row == "original=delete"
         local kind, index, start_time, end_time, text = row:match("^(%a+)\t(%d+)\t(%d+)\t(%d+)\t(.*)$")
         if kind then
             index = tonumber(index)
@@ -180,7 +181,10 @@ local function track(subs, sel)
     end
     for _, index in ipairs(indexes) do
         local made = generated[index]
-        if #made.text > 0 then
+        if #made.text > 0 and delete then
+            subs.delete(index)
+            insert(index, made.text)
+        elseif #made.text > 0 then
             local original = subs[index]
             original.comment = true
             subs[index] = original
@@ -191,13 +195,14 @@ local function track(subs, sel)
     local new_sel, offset = {}, 0
     for k = #indexes, 1, -1 do
         local index, made = indexes[k], generated[indexes[k]]
+        local gone = (delete and #made.text > 0) and 1 or 0
         for n = 0, #made.mask - 1 do
             new_sel[#new_sel + 1] = index + offset + n
         end
         for n = 1, #made.text do
-            new_sel[#new_sel + 1] = index + offset + #made.mask + n
+            new_sel[#new_sel + 1] = index + offset + #made.mask + n - gone
         end
-        offset = offset + #made.mask + #made.text
+        offset = offset + #made.mask + #made.text - gone
     end
     aegisub.set_undo_point("AegiSignTrack")
     return new_sel

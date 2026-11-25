@@ -50,8 +50,25 @@ fn parse_job(text: &str) -> Option<Job> {
     (times.len() >= 2 && !lines.is_empty() && res[0] > 0. && res[1] > 0.).then_some(Job { video: video?, result: result?, res, times, lines, styles, script, keyframes })
 }
 
+#[cfg(target_os = "linux")]
+fn launcher() {
+    let Some(data) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| Some(PathBuf::from(std::env::var_os("HOME")?).join(".local/share"))) else { return };
+    let Ok(exe) = std::env::current_exe() else { return };
+    let (icon, entry) = (data.join("icons/aegisigntrack.png"), data.join("applications/aegisigntrack.desktop"));
+    let text = format!("[Desktop Entry]\nType=Application\nName=AegiSignTrack\nExec=\"{}\" %f\nIcon={}\nStartupWMClass=aegisigntrack\nCategories=AudioVideo;Video;\nTerminal=false\n", exe.display(), icon.display());
+    if std::fs::read_to_string(&entry).is_ok_and(|old| old == text) {
+        return;
+    }
+    for (file, bytes) in [(&icon, &include_bytes!("../docs/logo.png")[..]), (&entry, text.as_bytes())] {
+        let _ = file.parent().map(std::fs::create_dir_all);
+        let _ = std::fs::write(file, bytes);
+    }
+}
+
 fn main() -> eframe::Result {
     app::language();
+    #[cfg(target_os = "linux")]
+    launcher();
     video::clean_stale();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (mut job, mut open, mut error) = (None, None, None);
@@ -64,7 +81,7 @@ fn main() -> eframe::Result {
         _ => {}
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280., 800.]).with_title(concat!("AegiSignTrack ", env!("AEGISIGNTRACK_BUILD"))),
+        viewport: egui::ViewportBuilder::default().with_inner_size([1280., 800.]).with_title(concat!("AegiSignTrack ", env!("AEGISIGNTRACK_BUILD"))).with_app_id("aegisigntrack").with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../docs/logo.png")).unwrap_or_default()),
         ..Default::default()
     };
     let start = move |cc: &eframe::CreationContext| -> Result<Box<dyn eframe::App>, Box<dyn std::error::Error + Send + Sync>> {
