@@ -179,6 +179,7 @@ struct Object {
     axis: usize,
     mask_layer: i32,
     text_layer: i32,
+    pose: [f32; 4],
     ease: [u32; 3],
     grow: f32,
     twin: bool,
@@ -258,6 +259,7 @@ impl Object {
             axis: 0,
             mask_layer: 0,
             text_layer: 0,
+            pose: [0., 0., 0., 100.],
             ease: [0; 3],
             grow: 0.,
             twin: false,
@@ -499,6 +501,10 @@ pub struct App {
     comment: bool,
     recap: Option<Recap>,
     mark: Option<(usize, usize)>,
+    halts: Vec<(usize, i32)>,
+    reshaped: f64,
+    hush: bool,
+    lost: Option<usize>,
     see: bool,
     tex_mark: u64,
     loop_play: bool,
@@ -565,6 +571,22 @@ fn heat(v: f32) -> Color32 {
     stops[i].1.lerp_to_gamma(stops[i + 1].1, ((v - stops[i].0) / (stops[i + 1].0 - stops[i].0)).clamp(0., 1.))
 }
 
+fn coarse(rgb: &[u8], w: usize, h: usize) -> Vec<f32> {
+    let mut cells = vec![(0f32, 0f32); 32 * 18];
+    for y in (0..h).step_by(4) {
+        for x in (0..w).step_by(4) {
+            let (c, px) = (&mut cells[y * 18 / h * 32 + x * 32 / w], &rgb[(y * w + x) * 3..]);
+            *c = (c.0 + 0.299 * px[0] as f32 + 0.587 * px[1] as f32 + 0.114 * px[2] as f32, c.1 + 1.);
+        }
+    }
+    cells.iter().map(|c| c.0 / c.1.max(1.)).collect()
+}
+
+fn is_cut(near: &[Vec<f32>], at: usize) -> bool {
+    let gaps: Vec<f32> = near.windows(2).map(|w| w[0].iter().zip(&w[1]).map(|(p, q)| (p - q).abs()).sum::<f32>() / w[0].len() as f32).collect();
+    (1..=gaps.len()).contains(&at) && gaps[at - 1] > 12. && gaps.iter().enumerate().all(|(i, g)| i == at - 1 || gaps[at - 1] > 2.5 * g)
+}
+
 fn bounds(pts: &[P]) -> (P, P) {
     pts.iter().fold(([f32::MAX; 2], [f32::MIN; 2]), |(lo, hi), v| ([lo[0].min(v[0]), lo[1].min(v[1])], [hi[0].max(v[0]), hi[1].max(v[1])]))
 }
@@ -611,6 +633,10 @@ impl App {
             comment: true,
             recap: None,
             mark: None,
+            halts: vec![],
+            reshaped: 0.,
+            hush: false,
+            lost: None,
             see: false,
             tex_mark: 0,
             loop_play: false,
@@ -730,6 +756,11 @@ impl App {
         (self.cur, self.range, self.tex, self.fit) = (0, [0, clip.n - 1], None, true);
         self.status = tf!("{} images chargées ({}×{}). Dessinez la sélection puis lancez le tracking.", "{} frames loaded ({}×{}). Draw the selection, then start tracking.", clip.n, clip.w, clip.h);
         (self.previews, self.preview_bytes, self.last_preview) = (Default::default(), 0, None);
+        if let Some(j) = &mut self.job {
+            let grid = |i: usize| clip.rgb(i).ok().map(|rgb| coarse(&rgb, clip.w, clip.h));
+            j.keyframes.retain(|&k| k > 0 && k < clip.n && is_cut(&(k.saturating_sub(7)..(k + 7).min(clip.n)).filter_map(grid).collect::<Vec<_>>(), k - k.saturating_sub(7)));
+        }
+        (self.halts, self.lost) = (vec![], None);
         self.clip = Some(Arc::new(clip));
         self.recall();
         self.resume = self.session().and_then(|f| std::fs::read_to_string(f).ok());
@@ -823,6 +854,7 @@ impl App {
     }
 
     fn start_track(&mut self, dirs: &[i32], ctx: &egui::Context) {
+        (self.halts, self.lost) = (vec![], None);
         let Some(clip) = self.clip.clone() else { return };
         if self.o.shape.is_empty() || (self.o.zone && self.o.shape.len() < 3) {
             self.status = if self.o.zone { t!("Dessinez d'abord une zone d'au moins 3 points sur la vidéo.", "First draw an area of at least 3 points on the video.").into() } else { t!("Posez d'abord au moins un point sur la vidéo.", "First place at least one point on the video.").into() };
@@ -867,16 +899,21 @@ impl App {
                 ((self.cur..clip.n).find(|&i| self.o.frames[i].is_some()), self.range[0])
             };
             let keys = self.job.as_ref().filter(|_| self.cuts).map_or(&[][..], |j| &j.keyframes);
-            let end = match start {
-                Some(s) if d > 0 => keys.iter().filter(|&&k| k > s).min().map_or(end, |&k| end.min(k - 1)),
-                Some(s) => keys.iter().filter(|&&k| k <= s).max().map_or(end, |&k| end.max(k)),
-                None => end,
+            let wall = match start {
+                Some(s) if d > 0 => keys.iter().copied().filter(|&k| k > s).min().filter(|&k| k <= end),
+                Some(s) => keys.iter().copied().filter(|&k| k <= s).max().filter(|&k| k > end),
+                None => None,
             };
+            let end = wall.map_or(end, |k| if d > 0 { k - 1 } else { k });
+            self.halts.extend(wall.map(|k| (k, d)));
             if let Some(s) = start.filter(|&s| if d > 0 { end > s } else { end < s }) {
                 passes.push((s, self.o.frames[s].clone().unwrap(), end));
             }
         }
         self.dirty = true;
+        if passes.is_empty() && !self.halts.is_empty() {
+            return;
+        }
         if passes.is_empty() {
             self.status = t!("Rien à tracker dans ce sens : placez-vous sur une frame déjà trackée, à l'intérieur de la plage.", "Nothing to track in this direction: go to a frame that is already tracked, inside the range.").into();
             return;
@@ -1269,7 +1306,7 @@ impl App {
             let opa: Vec<String> = o.opa.iter().map(|(p, v)| format!("{},{},{v}", p[0], p[1])).collect();
             text += &format!("forme={}\ntrou={}\nmasque={}\npoints={}\nancre={}\npipette={}\nopa={}\n", dots(&o.shape), dots(&o.hole), dots(&o.mask), dots(&o.ref_pts), dots(o.anchor.as_slice()), dots(o.color_spot.as_slice()), opa.join(";"));
             text += &format!("warp={}\ncache.actif={}\ntexte.actif={}\ntexte.importe={}\nref={}\nmix={}\ntexte.saisi={}\n", o.warp, o.mask_on, o.text_on, o.import, o.ref_frame, o.mix.map(|v| v.to_string()).join(","), o.text);
-            text += &format!("nom={}\nmanuel={}\n", o.name, o.manual.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","));
+            text += &format!("nom={}\nmanuel={}\npose={}\n", o.name, o.manual.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","), o.pose.map(|v| v.to_string()).join(","));
             for (n, f) in o.frames.iter().enumerate() {
                 if let Some(f) = f {
                     text += &format!("f={n} {} {} {} {} {}\n", f.h.map(|v| v.to_string()).join(" "), f.opacity, f.guessed, f.score, dots(&f.pts));
@@ -1299,6 +1336,7 @@ impl App {
             (o.ref_frame, o.text) = (line("ref").parse().unwrap_or(0), line("texte.saisi").into());
             o.mix = numbers(line("mix")).try_into().unwrap_or(o.mix);
             (o.name, o.manual) = (line("nom").into(), line("manuel").split(',').filter_map(|v| v.parse().ok()).collect());
+            o.pose = numbers(line("pose")).try_into().unwrap_or(o.pose);
             for row in part.lines().filter_map(|l| l.strip_prefix("f=")) {
                 let v: Vec<&str> = row.split(' ').collect();
                 let h: Vec<f64> = v.iter().skip(1).take(9).filter_map(|x| x.parse().ok()).collect();
@@ -1317,6 +1355,51 @@ impl App {
             let _ = std::fs::create_dir_all(file.parent().unwrap());
             let dir = self.ffmpeg_dir.as_ref().map_or(String::new(), |d| format!("ffmpeg={}\n", d.display()));
             let _ = std::fs::write(file, format!("{dir}langue={}\nmaj={}\n", if lang::english() { "en" } else { "fr" }, self.check as u8));
+        }
+    }
+
+    fn halt_dialog(&mut self, ctx: &egui::Context) {
+        if self.worker.is_some() || self.clip.is_none() {
+            return;
+        }
+        let (cut, lost) = (self.halts.first().copied(), self.lost.filter(|_| !self.hush));
+        let Some(at) = cut.map(|(k, d)| if d > 0 { k - 1 } else { k }).or(lost) else { return };
+        let mut pick = None;
+        egui::Window::new(if cut.is_some() { t!("Changement de plan", "Scene change") } else { t!("Objet perdu", "Object lost") }).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0., 0.]).show(ctx, |ui| {
+            ui.label(match cut {
+                Some(_) => tf!("Le tracking s'est arrêté à la frame {} : l'image change d'un coup juste à côté, comme à un changement de plan.\nSi l'objet est toujours là de l'autre côté, vous pouvez continuer.", "Tracking stopped at frame {}: the picture changes abruptly right next to it, as at a scene change.\nIf the object is still there on the other side, you can continue.", at + 1),
+                None => tf!("L'objet n'est plus retrouvé autour de la frame {} : sa position y est estimée (en orange sur la timeline).\nVous pouvez corriger ces frames à la main, puis relancer le tracking depuis l'une d'elles.", "The object is no longer found around frame {}: its position there is estimated (orange on the timeline).\nYou can correct those frames by hand, then start tracking again from one of them.", at + 1),
+            });
+            ui.add_space(6.);
+            ui.horizontal(|ui| {
+                if cut.is_some() && ui.button(t!("Continuer", "Continue")).on_hover_text(t!("Reprend le tracking au-delà de ce repère, qui disparaît de la timeline.", "Resumes tracking past this mark, which leaves the timeline.")).clicked() {
+                    pick = Some(0);
+                }
+                if ui.button(t!("Éditer le tracking", "Edit the tracking")).on_hover_text(t!("Va à cette frame pour corriger. Les boutons Tracker reprennent ensuite depuis la frame affichée.", "Goes to that frame so you can correct it. The Track buttons then resume from the displayed frame.")).clicked() {
+                    pick = Some(1);
+                }
+                if cut.is_none() && ui.button(t!("Fermer", "Close")).on_hover_text(t!("Garde les frames estimées telles quelles.", "Keeps the estimated frames as they are.")).clicked() {
+                    pick = Some(2);
+                }
+                if cut.is_none() && ui.button(t!("Ne plus afficher", "Don't show again")).on_hover_text(t!("Ferme cette fenêtre et ne la montre plus jusqu'à la fermeture du programme.", "Closes this window and keeps it away until the program is closed.")).clicked() {
+                    (pick, self.hush) = (Some(2), true);
+                }
+            });
+        });
+        let Some(pick) = pick else { return };
+        if pick > 0 {
+            (self.halts, self.lost) = (vec![], None);
+            if pick == 1 {
+                self.cur = at;
+            }
+        } else if let Some((k, d)) = cut {
+            let rest = self.halts.split_off(1);
+            if let Some(j) = &mut self.job {
+                j.keyframes.retain(|&x| x != k);
+            }
+            self.cur = at;
+            self.start_track(&[d], ctx);
+            self.halts.extend(rest);
         }
     }
 
@@ -1451,6 +1534,7 @@ impl App {
             twin: o.twin,
             mask_layer: o.mask_layer,
             text_layer: o.text_layer,
+            text_pose: o.pose.map(f64::from),
             covers: &o.covers,
         }
     }
@@ -1779,6 +1863,15 @@ impl App {
         }
         if let Some(err) = done {
             self.worker = None;
+            let edge = |k: usize, d: i32| if d > 0 { k - 1 } else { k };
+            if err.is_some() || what != "Tracking" {
+                self.halts.clear();
+            } else {
+                self.halts.retain(|&(k, d)| self.o.frames[edge(k, d)].is_some());
+                let lost = |i: &usize| self.o.frames[*i].as_ref().is_some_and(|f| f.guessed);
+                let (first, last) = ((0..self.o.frames.len()).find(|&i| self.o.frames[i].is_some()), (0..self.o.frames.len()).rfind(|&i| self.o.frames[i].is_some()));
+                self.lost = last.filter(lost).map(|l| (0..l).rev().find(|i| !lost(i)).map_or(0, |i| i + 1)).or(first.filter(lost).map(|f| (f..self.o.frames.len()).find(|i| !lost(i)).map_or(f, |i| i - 1)));
+            }
             let n = self.o.frames.iter().flatten().count();
             let guessed = self.o.frames.iter().flatten().filter(|f| f.guessed).count();
             self.status = match err {
@@ -1795,6 +1888,9 @@ impl App {
                 self.time_travel(undo);
             }
             let (left, right, space) = ctx.input(|i| (i.key_pressed(egui::Key::ArrowLeft) || i.modifiers.alt && i.key_pressed(egui::Key::Q), i.key_pressed(egui::Key::ArrowRight) || i.modifiers.alt && i.key_pressed(egui::Key::D), i.key_pressed(egui::Key::Space)));
+            if ctx.input(|i| i.key_pressed(egui::Key::F) || i.modifiers.command && i.key_pressed(egui::Key::Num0)) {
+                self.fit = true;
+            }
             if ctx.input(|i| i.key_pressed(egui::Key::H)) {
                 (self.hide, self.drag) = (!self.hide, None);
             }
@@ -2032,7 +2128,7 @@ impl App {
                 ui.selectable_value(&mut self.o.zone, true, t!("Zone", "Area")).on_hover_text(t!("Polygone (4 points ou plus) : toute la surface est suivie", "Polygon (4 points or more): the whole surface is tracked"));
             });
         });
-        ui.weak(if tracked { t!("Glisser : corriger à la main la frame affichée (tracking manuel).", "Drag: correct the displayed frame by hand (manual tracking).") } else { t!("Clic : ajouter un point. Glisser : déplacer. Clic droit : supprimer. Ctrl+Z : annuler.", "Click: add a point. Drag: move. Right click: delete. Ctrl+Z: undo.") });
+        ui.weak(if tracked { t!("Glisser : corriger à la main la frame affichée (tracking manuel).\nAlt+molette : agrandir ou réduire. Maj+molette : tourner.", "Drag: correct the displayed frame by hand (manual tracking).\nAlt+wheel: enlarge or shrink. Shift+wheel: turn.") } else { t!("Clic : ajouter un point. Glisser : déplacer. Clic droit : supprimer. Ctrl+Z : annuler.\nAlt+molette : agrandir ou réduire. Maj+molette : tourner.", "Click: add a point. Drag: move. Right click: delete. Ctrl+Z: undo.\nAlt+wheel: enlarge or shrink. Shift+wheel: turn.") });
         if ui.button(t!("Effacer la sélection", "Clear the selection")).clicked() {
             self.checkpoint();
             self.o.shape.clear();
@@ -2190,7 +2286,7 @@ impl App {
 
     fn mask_tab(&mut self, ui: &mut egui::Ui) {
         ui.checkbox(&mut self.o.mask_on, t!("Exporter le cache", "Export the mask"));
-        ui.weak(if self.o.mask.is_empty() { t!("Le cache reprend la sélection du tracking. Clic sur la vidéo : en dessiner un autre, où vous voulez.", "The mask uses the tracking selection. Click on the video: draw another one, wherever you like.") } else { t!("Clic : ajouter un point. Glisser : déplacer. Clic droit : supprimer.", "Click: add a point. Drag: move. Right click: delete.") });
+        ui.weak(if self.o.mask.is_empty() { t!("Le cache reprend la sélection du tracking. Clic sur la vidéo : en dessiner un autre, où vous voulez.\nAlt+molette : agrandir ou réduire. Maj+molette : tourner.", "The mask uses the tracking selection. Click on the video: draw another one, wherever you like.\nAlt+wheel: enlarge or shrink. Shift+wheel: turn.") } else { t!("Clic : ajouter un point. Glisser : déplacer. Clic droit : supprimer.\nAlt+molette : agrandir ou réduire. Maj+molette : tourner.", "Click: add a point. Drag: move. Right click: delete.\nAlt+wheel: enlarge or shrink. Shift+wheel: turn.") });
         if ui.add_enabled(!self.o.mask.is_empty(), egui::Button::new(t!("Revenir à la sélection du tracking", "Back to the tracking selection"))).clicked() {
             self.checkpoint();
             self.o.mask.clear();
@@ -2295,7 +2391,19 @@ impl App {
             .response
             .on_hover_text(t!("Nom du style Aegisub donné aux lignes copiées", "Name of the Aegisub style given to the copied lines"));
         }
-        ui.weak(t!("Clic ou glisser sur la vidéo : placer le texte.", "Click or drag on the video: place the text."));
+        ui.weak(t!("Clic ou glisser sur la vidéo : placer le texte.\nAlt+molette : taille. Maj+molette : rotation.", "Click or drag on the video: place the text.\nAlt+wheel: size. Shift+wheel: rotation."));
+        ui.label(t!("Pose de départ", "Starting pose")).on_hover_text(t!("Pour un texte posé sur une surface déjà vue de biais : réglez ici son inclinaison sur la frame où vous le placez. Le tracking part de cette pose et la fait évoluer.\nCes valeurs s'ajoutent aux \\frx, \\fry, \\frz et à la taille de la ligne.", "For text laid on a surface that is already seen at an angle: set its tilt here on the frame where you place it. Tracking starts from that pose and carries it on.\nThese values are added to the line's \\frx, \\fry, \\frz and size."));
+        ui.horizontal(|ui| {
+            for (i, name, hint) in [(0, "X ", t!("Bascule vers l'avant ou l'arrière (\\frx)", "Tips forwards or backwards (\\frx)")), (1, "Y ", t!("Pivote vers la gauche ou la droite (\\fry)", "Swings to the left or to the right (\\fry)")), (2, "Z ", t!("Tourne à plat (\\frz). Maj+molette sur la vidéo.", "Turns flat (\\frz). Shift+wheel on the video."))] {
+                ui.add(egui::DragValue::new(&mut self.o.pose[i]).speed(0.5).range(-360.0..=360.0).max_decimals(1).prefix(name).suffix("°")).on_hover_text(hint);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut self.o.pose[3]).speed(0.5).range(1.0..=5000.0).max_decimals(1).prefix(t!("Taille ", "Size ")).suffix(" %")).on_hover_text(t!("Agrandit ou réduit le texte. Alt+molette sur la vidéo.", "Enlarges or shrinks the text. Alt+wheel on the video."));
+            if ui.button(t!("Remettre à plat", "Reset")).clicked() {
+                self.o.pose = [0., 0., 0., 100.];
+            }
+        });
         let cuts = [(Cut::None, t!("Pas de découpe", "No clipping")), (Cut::Inside, t!("Visible seulement dans le cache (\\clip)", "Visible only inside the mask (\\clip)")), (Cut::Outside, t!("Caché par le cache (\\iclip)", "Hidden by the mask (\\iclip)"))];
         egui::ComboBox::from_id_salt("cut").selected_text(cuts.iter().find(|c| c.0 == self.o.cut).map_or("", |c| c.1)).show_ui(ui, |ui| {
             for (c, name) in cuts {
@@ -2356,11 +2464,11 @@ impl App {
     fn timeline(&mut self, ui: &mut egui::Ui) {
         let Some(n) = self.clip.as_ref().map(|c| c.n) else { return };
         let busy = self.worker.is_some();
-        ui.add_space(4.);
+        ui.add_space(8.);
         let (rows, sel) = (self.objects.len(), self.sel);
-        let (side, row, curve) = (104., 18., if self.graph { 16. } else { 0. });
-        let (full, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14. + rows as f32 * row + curve + 16.), Sense::click_and_drag());
-        let rect = Rect::from_min_max(Pos2::new(full.left() + side, full.top() + 14.), Pos2::new(full.right(), full.bottom() - 16.));
+        let (side, row, curve) = (104., 26., if self.graph { 24. } else { 0. });
+        let (full, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 14. + rows as f32 * row + curve + 22.), Sense::click_and_drag());
+        let rect = Rect::from_min_max(Pos2::new(full.left() + side, full.top() + 14.), Pos2::new(full.right(), full.bottom() - 22.));
         let x = |i: usize| rect.left() + rect.width() * i as f32 / n as f32;
         let top = |r: usize| rect.top() + r as f32 * row + if r > sel { curve } else { 0. };
         let p = ui.painter_at(full);
@@ -2420,7 +2528,7 @@ impl App {
             p.add(Shape::line(vec![Pos2::new(at + way, rect.top()), Pos2::new(at, rect.top()), Pos2::new(at, rect.bottom()), Pos2::new(at + way, rect.bottom())], Stroke::new(1.5, ACCENT.gamma_multiply(0.75))));
         }
         p.rect_filled(Rect::from_x_y_ranges(x(self.cur)..=x(self.cur + 1).max(x(self.cur) + 2.), full.top()..=rect.bottom()), 0., ACCENT);
-        let mut at = Pos2::new(full.left() + 8., full.bottom() - 7.);
+        let mut at = Pos2::new(full.left() + 8., full.bottom() - 9.);
         for (k, name) in [t!("suivie", "tracked"), t!("estimée", "estimated"), t!("recouverte", "covered"), t!("corrigée à la main", "corrected by hand"), t!("changement de plan", "scene change")].into_iter().enumerate() {
             p.add(match k {
                 3 => diamond(at, 0.6),
@@ -2465,6 +2573,7 @@ impl App {
             }
             self.dirty = true;
         }
+        ui.add_space(4.);
         ui.horizontal(|ui| {
             ui.add_enabled_ui(!busy, |ui| {
                 if ui.button("⏮").clicked() {
@@ -2541,7 +2650,7 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.menu_button(t!("Vue", "View"), |ui| {
-                    if ui.button(t!("Ajuster la vue", "Fit the view")).on_hover_text(t!("Molette : zoom. Clic droit (ou clic molette) maintenu : déplacer la vue.", "Wheel: zoom. Right click (or wheel click) held: move the view.")).clicked() {
+                    if ui.button(t!("Ajuster la vue (F)", "Fit the view (F)")).on_hover_text(t!("Remet la vidéo entière dans la fenêtre. Raccourci : F ou Ctrl+0.\nMolette : zoom. Clic droit (ou clic molette) maintenu : déplacer la vue.", "Puts the whole video back in the window. Shortcut: F or Ctrl+0.\nWheel: zoom. Right click (or wheel click) held: move the view.")).clicked() {
                         self.fit = true;
                     }
                     ui.checkbox(&mut self.lock_view, t!("Verrouiller la vue sur l'objet", "Lock the view on the object")).on_hover_text(t!("L'objet suivi reste au même endroit de l'écran : s'il bouge pendant la lecture, c'est que le tracking glisse.", "The tracked object stays at the same place on screen: if it moves during playback, the tracking is slipping."));
@@ -2558,7 +2667,7 @@ impl App {
                 });
             });
         });
-        ui.add_space(2.);
+        ui.add_space(12.);
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui) {
@@ -2594,8 +2703,12 @@ impl App {
             self.pan = (rect.size() - size * self.zoom) / 2.;
         }
         if let Some(pos) = resp.hover_pos() {
-            let scroll = ui.input(|i| i.smooth_scroll_delta().y);
-            if scroll != 0. {
+            let (wheel, keys) = ui.input(|i| (i.smooth_scroll_delta(), i.modifiers));
+            let scroll = wheel.y;
+            if (keys.alt || keys.shift) && wheel != Vec2::ZERO && self.worker.is_none() {
+                let step = (wheel.x + wheel.y) * 0.0005;
+                self.reshape(if keys.alt { step.exp() } else { 1. }, if keys.alt { 0. } else { step }, ui.input(|i| i.time));
+            } else if scroll != 0. {
                 let new = (self.zoom * (scroll * 0.003).exp()).clamp(0.05, 40.);
                 self.pan -= (pos - rect.min - self.pan) * (new / self.zoom - 1.);
                 (self.zoom, self.fit) = (new, false);
@@ -2954,6 +3067,42 @@ impl App {
         self.flat &= open;
     }
 
+    fn reshape(&mut self, k: f32, a: f32, now: f64) {
+        if now - self.reshaped > 0.6 {
+            self.checkpoint();
+        }
+        self.reshaped = now;
+        let (cos, sin) = (k * a.cos(), k * a.sin());
+        let spin = |c: P, v: &mut P| *v = [c[0] + (v[0] - c[0]) * cos - (v[1] - c[1]) * sin, c[1] + (v[0] - c[0]) * sin + (v[1] - c[1]) * cos];
+        let all = |pts: &mut Vec<P>| {
+            let c = export::centroid(pts);
+            pts.iter_mut().for_each(|v| spin(c, v));
+        };
+        match self.mode {
+            Mode::Text => (self.o.pose[2], self.o.pose[3]) = ((self.o.pose[2] - a.to_degrees()) % 360., (self.o.pose[3] * k).clamp(1., 5000.)),
+            Mode::Mask => {
+                if self.o.mask.is_empty() {
+                    self.o.mask = self.o.shape.clone();
+                }
+                all(&mut self.o.mask)
+            }
+            Mode::Track if !self.o.tracked() => all(&mut self.o.shape),
+            Mode::Track => {
+                if self.o.frames[self.cur].is_none() {
+                    self.o.frames[self.cur] = self.nearest(self.cur).and_then(|i| self.o.frames[i].clone());
+                }
+                let Some(f) = &mut self.o.frames[self.cur] else { return };
+                let c = track::apply(&f.h, export::centroid(if self.o.shape.is_empty() { &self.o.ref_pts } else { &self.o.shape }));
+                f.pts.iter_mut().for_each(|v| spin(c, v));
+                let (cos, sin, cx, cy) = (cos as f64, sin as f64, c[0] as f64, c[1] as f64);
+                f.h = track::mul(&[cos, -sin, cx - cos * cx + sin * cy, sin, cos, cy - sin * cx - cos * cy, 0., 0., 1.], &f.h);
+                f.guessed = false;
+                self.o.manual.insert(self.cur);
+            }
+        }
+        self.dirty = true;
+    }
+
     fn apply_drag(&mut self, d: Drag, delta: P, view: &View, tracked: bool) {
         let (c, fol) = (export::centroid(&self.o.mask), self.o.mask_follow);
         let moved = |v: &mut P| *v = view.unplace(c, fol, add(view.place(c, fol, *v), delta));
@@ -3042,6 +3191,7 @@ impl eframe::App for App {
         self.image_dialog(&ctx);
         self.import_dialog(&ctx);
         self.resume_dialog(&ctx);
+        self.halt_dialog(&ctx);
         self.update_dialog(&ctx);
     }
 
@@ -3085,6 +3235,23 @@ mod tests {
         assert_eq!((cut.len(), area), (12, 7.));
         let back: Vec<Pos2> = l.iter().rev().copied().collect();
         assert_eq!(ears(&back).len(), 12);
+    }
+
+    #[test]
+    fn a_keyframe_counts_as_a_cut_only_when_the_picture_jumps() {
+        let frame = |tone: u8, slide: usize| -> Vec<f32> {
+            let rgb: Vec<u8> = (0..64 * 36).flat_map(|i| [tone.saturating_add((((i % 64 + slide) / 8) % 2 * 40) as u8); 3]).collect();
+            coarse(&rgb, 64, 36)
+        };
+        let shot = |tone: u8| (0..4).map(move |i| frame(tone, i));
+        let steady: Vec<_> = shot(40).chain(shot(40)).collect();
+        let cut: Vec<_> = shot(40).chain(shot(160)).collect();
+        let flicker: Vec<_> = [40, 90, 40, 90, 160, 90, 40, 90].map(|tone| frame(tone, 0)).into();
+        assert!(!is_cut(&steady, 4));
+        assert!(is_cut(&cut, 4));
+        assert!(!is_cut(&cut, 3));
+        assert!(!is_cut(&flicker, 4));
+        assert!(is_cut(&cut[3..], 1));
     }
 
     #[test]

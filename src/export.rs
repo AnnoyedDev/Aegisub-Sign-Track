@@ -152,6 +152,7 @@ pub struct Export<'a> {
     pub twin: bool,
     pub mask_layer: i32,
     pub text_layer: i32,
+    pub text_pose: [f64; 4],
     pub covers: &'a [Cover],
 }
 
@@ -456,23 +457,31 @@ impl Export<'_> {
             let at = if fol.translation { [a[0] as f64 * self.scale[0], a[1] as f64 * self.scale[1]] } else { still };
             let k = if fol.scale { (sx * sy).sqrt() } else { 1. };
             let turn = if fol.rotation { r.to_degrees() } else { 0. };
-            return ([at[0], at[1], b.fx * k, b.fy * k, b.fr - turn, 0., 0., 0., k, alpha], None);
+            let (c, s) = (k * turn.to_radians().cos(), k * turn.to_radians().sin());
+            let org = b.org.map(|o| (o[0] - still[0], o[1] - still[1])).map(|(x, y)| (at[0] + x * c - y * s, at[1] + x * s + y * c));
+            return ([at[0], at[1], b.fx * k, b.fy * k, b.fr - turn, b.tx, b.ty, 0., k, alpha], org);
         }
         const H: f64 = 32.;
-        let o = self.spot(f, anchor, 0., 0.);
+        let drop = [1., 1., 1., 0.5, 0.5, 0.5, 0., 0., 0.][(b.align.clamp(1, 9) - 1) as usize];
+        let (ax, ay, az) = (-b.tx.to_radians(), b.ty.to_radians(), -b.fr.to_radians());
+        let away = b.org.map_or([0., 0.], |o| [still[0] - o[0], still[1] - o[1]]);
+        let lay = |u: f64, v: f64| {
+            let (x, y) = (b.fx / 100. * (u + b.fax * (v + b.font * drop)) + away[0], b.fy / 100. * v + away[1]);
+            let (x1, y1) = (az.cos() * x - az.sin() * y, az.sin() * x + az.cos() * y);
+            let (y2, z2) = (ax.cos() * y1, -ax.sin() * y1);
+            let (x3, z3) = (ay.cos() * x1 + ay.sin() * z2, ay.sin() * x1 - ay.cos() * z2);
+            self.spot(f, anchor, x3 * DEPTH / (z3 + DEPTH) - away[0], y2 * DEPTH / (z3 + DEPTH) - away[1])
+        };
+        let o = lay(0., 0.);
         let mut n = [[0f64; 2]; 3];
-        for (c, (dx, dy)) in [(H, 0.), (0., H)].into_iter().enumerate() {
-            let (p, m) = (self.spot(f, anchor, dx, dy), self.spot(f, anchor, -dx, -dy));
+        for (c, (u, v)) in [(H, 0.), (0., H)].into_iter().enumerate() {
+            let (p, m) = (lay(u, v), lay(-u, -v));
             let (sum, dif) = ([p[0] + m[0] - 2. * o[0], p[1] + m[1] - 2. * o[1]], [p[0] - m[0], p[1] - m[1]]);
             let w = -(sum[0] * dif[0] + sum[1] * dif[1]) / (H * (dif[0] * dif[0] + dif[1] * dif[1]).max(1e-12));
             let k = (1. - w * w * H * H) / (2. * H);
             (n[0][c], n[1][c], n[2][c]) = (dif[0] * k, dif[1] * k, DEPTH * w);
         }
-        let (cr, sr) = (b.fr.to_radians().cos(), b.fr.to_radians().sin());
-        let col = |c: usize| -> [f64; 3] {
-            let (u, v) = if c == 0 { (cr * b.fx / 100., -sr * b.fx / 100.) } else { (sr * b.fy / 100., cr * b.fy / 100.) };
-            std::array::from_fn(|r| n[r][0] * u + n[r][1] * v)
-        };
+        let col = |c: usize| -> [f64; 3] { std::array::from_fn(|r| n[r][c]) };
         let dot = |a: &[f64; 3], b: &[f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
         let (n1, n2) = (col(0), col(1));
         let sx = dot(&n1, &n1).sqrt().max(1e-9);
@@ -487,7 +496,6 @@ impl Export<'_> {
         let (fscx, fscy, grow) = if fol.scale { (100. * sx, 100. * sy, (sx * sy / (b.fx * b.fy / 1e4).max(1e-9)).sqrt()) } else { (b.fx, b.fy, 1.) };
         let frz = if fol.rotation { -az.to_degrees() } else { b.fr };
         let at = if fol.translation { o } else { still };
-        let drop = [1., 1., 1., 0.5, 0.5, 0.5, 0., 0., 0.][(b.align.clamp(1, 9) - 1) as usize];
         let slip = fax * fscx / 100. * b.font * drop;
         let org = (slip.abs() > 0.05).then_some((at[0], at[1]));
         ([at[0] - if org.is_some() { slip } else { 0. }, at[1], fscx, fscy, frz, -ax.to_degrees(), ay.to_degrees(), fax, grow, alpha], org)
@@ -500,6 +508,8 @@ impl Export<'_> {
             let own = line_pos(&l.text).filter(|_| self.own_pos).map(|(x, y)| [(x / self.scale[0]) as f32, (y / self.scale[1]) as f32]);
             let anchor = own.unwrap_or(self.anchor);
             let mut base = Base::read(l);
+            let [tx, ty, turn, size] = self.text_pose;
+            (base.tx, base.ty, base.fr, base.fx, base.fy) = (base.tx + tx, base.ty + ty, base.fr + turn, base.fx * size / 100., base.fy * size / 100.);
             let mut poses: Vec<Pose> = vec![];
             for (i, start, end, f) in self.each().filter(|(i, ..)| (l.first..l.end).contains(i) && self.cover(*i) != Cover::Hidden) {
                 let (mut v, org) = self.pose(f, anchor, &base);
@@ -511,7 +521,7 @@ impl Export<'_> {
                 poses.push(Pose { i, at: self.times[i], start, end, v, org, cut: self.cut_tag(i, f) });
             }
             let any = |c: usize, min: f64| poses.iter().any(|p| p.v[c].abs() > min);
-            let plan = Plan { size: fol.scale, turn: fol.rotation, tilt: fol.deform && (any(5, 0.01) || any(6, 0.01)), lean: fol.deform && any(7, 0.0005), alpha: self.text_opacity, org: poses.iter().any(|p| p.org.is_some()), cut: poses.iter().any(|p| !p.cut.is_empty()) };
+            let plan = Plan { size: fol.scale || size != 100., turn: fol.rotation || turn != 0., deform: fol.deform, tilt: any(5, 0.01) || any(6, 0.01), lean: fol.deform && any(7, 0.0005), alpha: self.text_opacity, org: poses.iter().any(|p| p.org.is_some()), cut: poses.iter().any(|p| !p.cut.is_empty()) };
             base.keep(&plan);
             let mut s = 0;
             while s < poses.len() {
@@ -594,6 +604,7 @@ struct Pose {
 struct Plan {
     size: bool,
     turn: bool,
+    deform: bool,
     tilt: bool,
     lean: bool,
     alpha: bool,
@@ -605,6 +616,10 @@ struct Base {
     fx: f64,
     fy: f64,
     fr: f64,
+    tx: f64,
+    ty: f64,
+    fax: f64,
+    org: Option<[f64; 2]>,
     bord: Option<f64>,
     shad: Option<f64>,
     font: f64,
@@ -617,7 +632,7 @@ struct Base {
 impl Base {
     fn read(l: &SrcLine) -> Base {
         let (toks, rest) = first_block(&l.text);
-        let mut b = Base { fx: l.scale_x, fy: l.scale_y, fr: l.angle, bord: l.outline, shad: l.shadow, font: l.font, align: l.align, toks: toks.iter().map(|t| t.to_string()).collect(), kept: String::new(), rest: rest.into() };
+        let mut b = Base { fx: l.scale_x, fy: l.scale_y, fr: l.angle, tx: 0., ty: 0., fax: 0., org: None, bord: l.outline, shad: l.shadow, font: l.font, align: l.align, toks: toks.iter().map(|t| t.to_string()).collect(), kept: String::new(), rest: rest.into() };
         for t in &toks {
             let t = t.strip_prefix('\\').unwrap_or("");
             if let Some(v) = tag_num(t, "fscx") {
@@ -626,6 +641,15 @@ impl Base {
                 b.fy = v;
             } else if let Some(v) = tag_num(t, "frz").or_else(|| tag_num(t, "fr")) {
                 b.fr = v;
+            } else if let Some(v) = tag_num(t, "frx") {
+                b.tx = v;
+            } else if let Some(v) = tag_num(t, "fry") {
+                b.ty = v;
+            } else if let Some(v) = tag_num(t, "fax") {
+                b.fax = v;
+            } else if let Some(v) = t.strip_prefix("org(") {
+                let at: Vec<f64> = v.trim_end_matches(')').split(',').filter_map(|n| n.trim().parse().ok()).collect();
+                b.org = at.try_into().ok();
             } else if let Some(v) = tag_num(t, "bord") {
                 b.bord = Some(v);
             } else if let Some(v) = tag_num(t, "shad") {
@@ -645,7 +669,9 @@ impl Base {
             t.starts_with("pos(") || t.starts_with("move(")
                 || (p.size && (is("fscx") || is("fscy") || is("bord") || is("shad")))
                 || (p.turn && (is("frz") || is("fr")))
-                || ((p.tilt || p.lean || p.org) && (is("frx") || is("fry") || is("fax") || t.starts_with("org(")))
+                || (p.tilt && (is("frx") || is("fry")))
+                || (p.deform && (p.tilt || p.lean || p.org) && is("fax"))
+                || ((p.org || p.deform && (p.tilt || p.lean)) && t.starts_with("org("))
                 || (p.alpha && t.starts_with("alpha"))
                 || (p.cut && (t.starts_with("clip(") || t.starts_with("iclip(")))
         };
@@ -808,7 +834,7 @@ mod tests {
     use crate::track::{mul, translation, IDENT};
 
     fn export<'a>(frames: &'a [Option<FrameData>], times: &'a [i64], mask: &'a [P]) -> Export<'a> {
-        Export { frames, ref_pts: &[], warp: false, times, scale: [2., 2.], size: [1280., 720.], mask, anchor: [100., 50.], own_pos: false, add_text: false, color: [0x11, 0x22, 0x33], tints: vec![], gradients: &[], bands: 4, picture: None, pin: false, blur: 0., mask_opacity: false, text_opacity: false, mask_follow: Follow::ALL, text_follow: Follow::ALL, merge: true, group: false, cut: Cut::None, grow: 0., twin: false, mask_layer: 0, text_layer: 0, covers: &[] }
+        Export { frames, ref_pts: &[], warp: false, times, scale: [2., 2.], size: [1280., 720.], mask, anchor: [100., 50.], own_pos: false, add_text: false, color: [0x11, 0x22, 0x33], tints: vec![], gradients: &[], bands: 4, picture: None, pin: false, blur: 0., mask_opacity: false, text_opacity: false, mask_follow: Follow::ALL, text_follow: Follow::ALL, merge: true, group: false, cut: Cut::None, grow: 0., twin: false, mask_layer: 0, text_layer: 0, text_pose: [0., 0., 0., 100.], covers: &[] }
     }
 
     fn fd(h: [f64; 9]) -> Option<FrameData> {
@@ -900,6 +926,79 @@ mod tests {
         let moved = e.text_lines(&[low])[0].text.clone();
         let slip = tag(&moved, "\\fax") * tag(&moved, "\\fscx") / 100. * 40.;
         assert!(moved.contains("\\org(220,100)") && (tag(&moved, "\\pos(") - (220. - slip)).abs() < 0.01, "{moved}");
+    }
+
+    #[test]
+    fn text_starts_from_the_pose_it_is_given() {
+        let frames = [fd(IDENT)];
+        let mut e = export(&frames, &[0, 41], &[]);
+        e.text_pose = [20., -30., 10., 150.];
+        for deform in [true, false] {
+            e.text_follow.deform = deform;
+            let text = e.text_lines(&[SrcLine::standalone("T", "Default")])[0].text.clone();
+            for (name, want) in [("\\frx", 20.), ("\\fry", -30.), ("\\frz", 10.), ("\\fscx", 150.), ("\\fscy", 150.)] {
+                assert!((tag(&text, name) - want).abs() < 0.05, "{name} dans {text}");
+            }
+        }
+        e.text_pose = [0., 0., 0., 100.];
+        let own = e.text_lines(&[SrcLine::standalone("{\\frx15\\fry-25}T", "Default")])[0].text.clone();
+        assert!((tag(&own, "\\frx") - 15.).abs() < 0.05 && (tag(&own, "\\fry") + 25.).abs() < 0.05 && own.matches("\\frx").count() == 1, "{own}");
+        let tilt = mul(&translation(110., 50.), &mul(&[1.1, -0.2, 0., 0.15, 0.9, 0., 0.0006, -0.0004, 1.], &translation(-100., -50.)));
+        let moved = [fd(tilt)];
+        let mut e = export(&moved, &[0, 41], &[]);
+        e.text_pose = [20., -30., 10., 150.];
+        let text = e.text_lines(&[SrcLine::standalone("T", "Default")])[0].text.clone();
+        let (ax, ay, az) = (-20f64.to_radians(), -30f64.to_radians(), -10f64.to_radians());
+        for u in [[40., 0.], [0., 30.], [-60., 25.]] {
+            let (x, y) = (1.5 * u[0], 1.5 * u[1]);
+            let (x1, y1) = (az.cos() * x - az.sin() * y, az.sin() * x + az.cos() * y);
+            let (y2, z2) = (ax.cos() * y1, -ax.sin() * y1);
+            let (x3, z3) = (ay.cos() * x1 + ay.sin() * z2, ay.sin() * x1 - ay.cos() * z2);
+            let want = e.spot(moved[0].as_ref().unwrap(), [100., 50.], x3 * DEPTH / (z3 + DEPTH), y2 * DEPTH / (z3 + DEPTH));
+            let got = libass(&text, u);
+            assert!((got[0] + 220. - want[0]).hypot(got[1] + 100. - want[1]) < 0.05, "{u:?} : {got:?} avec {text}");
+        }
+    }
+
+    fn drawn(text: &str, u: [f64; 2]) -> [f64; 2] {
+        let pair = |name: &str| -> Option<[f64; 2]> {
+            let v: Vec<f64> = text[text.find(name)? + name.len()..].split(')').next()?.split(',').filter_map(|n| n.parse().ok()).collect();
+            v.get(..2)?.try_into().ok()
+        };
+        let pos = pair("\\pos(").unwrap();
+        let org = pair("\\org(").unwrap_or(pos);
+        let (ax, ay, az) = (-tag(text, "\\frx").to_radians(), tag(text, "\\fry").to_radians(), -tag(text, "\\frz").to_radians());
+        let (x, y) = (tag(text, "\\fscx") / 100. * (u[0] + tag(text, "\\fax") * (u[1] + 40.)) + pos[0] - org[0], tag(text, "\\fscy") / 100. * u[1] + pos[1] - org[1]);
+        let (x1, y1) = (az.cos() * x - az.sin() * y, az.sin() * x + az.cos() * y);
+        let (y2, z2) = (ax.cos() * y1, -ax.sin() * y1);
+        let (x3, z3) = (ay.cos() * x1 + ay.sin() * z2, ay.sin() * x1 - ay.cos() * z2);
+        [org[0] + x3 * DEPTH / (z3 + DEPTH), org[1] + y2 * DEPTH / (z3 + DEPTH)]
+    }
+
+    #[test]
+    fn a_perspective_set_in_aegisub_is_kept_and_carried_by_the_tracking() {
+        let given = "{\\pos(220,100)\\org(180,140)\\frz10\\frx20\\fry-30\\fax0.2\\fscx120\\fscy90}T";
+        let mut line = SrcLine::standalone(given, "Default");
+        line.set_box(2, 40.);
+        let tilt = mul(&translation(110., 50.), &mul(&[1.1, -0.2, 0., 0.15, 0.9, 0., 0.0006, -0.0004, 1.], &translation(-100., -50.)));
+        for h in [IDENT, tilt] {
+            let frames = [fd(h)];
+            let mut e = export(&frames, &[0, 41], &[]);
+            e.own_pos = true;
+            let out = e.text_lines(&[line.clone()])[0].text.clone();
+            assert_eq!((out.matches("\\org(").count(), out.matches("\\fax").count(), out.matches("\\frx").count()), (1, 1, 1), "{out}");
+            for u in [[0., 0.], [40., 0.], [0., -30.], [-60., 25.], [80., -50.]] {
+                let was = drawn(given, u);
+                let want = e.spot(frames[0].as_ref().unwrap(), [110., 50.], was[0] - 220., was[1] - 100.);
+                let got = drawn(&out, u);
+                assert!((got[0] - want[0]).hypot(got[1] - want[1]) < 0.05, "{u:?} : {got:?} au lieu de {want:?} avec {out}");
+            }
+        }
+        let mut e = export(&[], &[0, 41], &[]);
+        let still = [fd(translation(10., 0.))];
+        (e.frames, e.own_pos, e.text_follow.deform) = (&still, true, false);
+        let flat = e.text_lines(&[line])[0].text.clone();
+        assert!(flat.contains("\\pos(240,100)\\org(200,140)") && flat.contains("\\fax0.2") && flat.matches("\\org(").count() == 1, "{flat}");
     }
 
     #[test]

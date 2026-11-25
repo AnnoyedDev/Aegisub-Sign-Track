@@ -66,6 +66,13 @@ fn launcher() {
 }
 
 fn main() -> eframe::Result {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some_and(|d| !d.is_empty()) {
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+            std::env::remove_var("WAYLAND_SOCKET");
+        }
+    }
     app::language();
     #[cfg(target_os = "linux")]
     launcher();

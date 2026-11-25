@@ -49,8 +49,9 @@ Made by AnnoyedDev.
    Tracker path*.
 
 On Linux the program writes a menu entry and its icon to `~/.local/share` when it starts
-(`applications/aegisigntrack.desktop` and `icons/aegisigntrack.png`). Wayland desktops need both to
-show the window icon.
+(`applications/aegisigntrack.desktop` and `icons/aegisigntrack.png`), which the desktop uses for the
+window icon. Under Wayland it runs through XWayland whenever XWayland is there, since its windowing
+library cannot receive dropped files on Wayland yet.
 
 ### From source
 
@@ -95,6 +96,9 @@ ends of the range, which the `[` and `]` buttons move to the displayed frame.
 When the track slips, go to the frame where it went wrong, drag the selection back into place and
 track again from there.
 
+Hold Alt and turn the wheel to resize the selection around its centre, or Shift to rotate it. On a
+tracked object the same two gestures correct the displayed frame, as dragging does.
+
 Under *What are you tracking?* sit six profiles: *Still sign*, *Scrolling*, *Board seen at an angle*,
 *Object that deforms*, *Fade* and *Page / shutter*. Clicking one ticks the motions and extra tracking
 that suit it, and every box can still be changed afterwards. *Tracked motion*, *Other tracking*,
@@ -104,7 +108,8 @@ summary of what it holds.
 ### The Mask tab
 
 Tick *Export the mask*. The mask starts out as the tracked selection, and a click on the video draws a
-different one that follows the tracking from that spot.
+different one that follows the tracking from that spot. Alt+wheel and Shift+wheel resize and rotate it
+too.
 
 - The colour is flat and can be picked from the video with the eyedropper. *Pick the colour again on
   every frame* reads it at the same spot of the object on each frame, which helps when the lighting
@@ -141,6 +146,15 @@ what you type in the tab is added beside them without touching them.
 - *Measure* gives the text the same blur as the edges of the tracked object.
 - *Layer +* set to 1 here and 0 for the mask keeps the text in front, however the lines get sorted or
   moved in Aegisub. Left at 0 on both, layers stay as they were.
+
+*Starting pose* is for a surface that already sits at an angle on the frame where you place the text.
+*X* tips the text forwards or backwards (`\frx`), *Y* swings it left or right (`\fry`), *Z* turns it
+flat (`\frz`) and *Size* scales it. Over the video, Shift+wheel turns it and Alt+wheel resizes it.
+Tracking takes that pose as its starting point and carries it along with the object.
+
+A line you already put in perspective in Aegisub keeps it. Its `\frx`, `\fry`, `\frz`, `\fax`, `\org`,
+`\fscx` and `\fscy` become the starting pose, the values from the tab are added on top, and this holds
+when you export the tracking alone too.
 
 libass renders the text preview through ffmpeg, during playback as well, so you see what Aegisub will
 show. The font may differ if the style is unknown.
@@ -200,7 +214,10 @@ I doubt you want a 1 GB .ass and an Aegisub that crawls.
 | Space or Ctrl+Space | Play, pause |
 | Ctrl+Z, Ctrl+Shift+Z | Undo, redo |
 | H | Hide or show the overlays |
+| F or Ctrl+0 | Fit the whole video back in the window |
 | Wheel | Zoom |
+| Alt+wheel | Resize the selection, the mask or the text, whichever tab is open |
+| Shift+wheel | Rotate it |
 | Right or middle button held | Move the view |
 
 Keys do nothing while you are typing in a field.
@@ -221,7 +238,8 @@ Keys do nothing while you are typing in a field.
 | The track drifts little by little | *Realign on the start frame* (ticked by default, in the Search section) lines every frame up with the one where tracking began, so small errors cannot add up. Untick it if the object truly changes its look along the way. *Refine* does the same realignment afterwards on the tracked frames of the range, for instance after you moved the selection by hand |
 | Part of the area is animated or is not part of the object | Draw an *Area to ignore* around it, in *Area* mode and before tracking. That part no longer counts |
 | The motion is perfectly straight | Under *Translation*, set *Axis* to *Horizontal* or *Vertical*. The centre of the object is frozen on the other axis with no jitter at all, including while the object is hidden and its path carried on. Untick *Scale* and *Rotation* as well. Keep this for scrolling credits and pans, because the track will be wrong if the object also moves the other way |
-| The shot changes | When started from Aegisub, the tracker receives its keyframes, draws them as white marks on the timeline and stops tracking there. Untick *Options > Stop at scene changes* to let it run through |
+| The shot changes | When started from Aegisub, the tracker receives its keyframes and keeps only those where the picture jumps. They show as white marks on the timeline, and tracking stops there. A window then offers *Continue*, which carries on past the mark and removes it, or *Edit the tracking*, which takes you to the frame where it stopped. Untick *Options > Stop at scene changes* to run through every mark unasked |
+| The object stays lost to the end | If a track ends on estimated frames, an *Object lost* window names the frame where it let go. *Edit the tracking* goes there so you can fix it by hand and track again, *Close* keeps the estimate, and *Don't show again* silences the window until you quit the program |
 | The sign leaves the picture or fades before the end | Set the range to the frames you need, then *Advanced > Extrapolate*. Untracked frames before and after the track are filled by carrying its motion on, and shown in orange |
 
 ### Covering

@@ -47,8 +47,9 @@ Développé par AnnoyedDev.
    *Automatisme > AegiSignTrack > Chemin du tracker*.
 
 Sous Linux, AegiSignTrack crée à son lancement une entrée de menu et son icône dans `~/.local/share`
-(`applications/aegisigntrack.desktop` et `icons/aegisigntrack.png`). Les bureaux Wayland en ont besoin
-pour afficher l'icône de la fenêtre.
+(`applications/aegisigntrack.desktop` et `icons/aegisigntrack.png`), dont le bureau se sert pour l'icône
+de la fenêtre. Sur un bureau Wayland il passe par XWayland quand celui-ci est installé, parce que sa
+bibliothèque de fenêtrage n'accepte pas encore le dépôt de fichiers sous Wayland.
 
 ### Compiler soi-même
 
@@ -90,6 +91,9 @@ de la plage. Les boutons `[` et `]` placent ces bornes sur la frame affichée.
 
 Si le suivi dérape, aller sur la frame fautive, glisser la sélection au bon endroit et relancer de là.
 
+Alt+molette agrandit ou réduit la sélection et Maj+molette la tourne, autour de son centre. Une fois le
+tracking fait, les deux gestes corrigent la frame affichée, comme le glisser.
+
 *Que suivez-vous ?* propose six profils : *Sign fixe*, *Défilement*, *Panneau vu de biais*, *Objet qui se
 déforme*, *Fondu* et *Page / volet*. Un clic coche les mouvements et les suivis qui conviennent, et
 chaque case reste modifiable ensuite. Les sections *Mouvement suivi*, *Autres suivis*, *Recherche* et
@@ -98,7 +102,8 @@ chaque case reste modifiable ensuite. Les sections *Mouvement suivi*, *Autres su
 ### Cache
 
 Cocher *Exporter le cache*. Il reprend la sélection du tracking. Un clic sur la vidéo en dessine un
-autre, qui suit le tracking depuis cet endroit.
+autre, qui suit le tracking depuis cet endroit. Alt+molette et Maj+molette l'agrandissent et le
+tournent.
 
 | Réglage | Effet |
 |---|---|
@@ -132,6 +137,15 @@ faut l'importer. Le choix se change ensuite dans l'onglet.
 | *Flouter aussi l'intérieur des lettres* | Exporte chaque ligne deux fois, le contour dessous et les lettres sans contour dessus. En ASS, le flou seul ne touche que l'extérieur du contour |
 | *Mesurer* | Donne au texte le flou des bords de l'objet suivi |
 | *Calque +* | Avec 1 ici et 0 pour le cache, le texte reste devant le cache même si les lignes sont triées ou déplacées dans Aegisub. À 0 partout, les calques ne changent pas |
+
+*Pose de départ* sert quand la surface est déjà vue de biais sur la frame où le texte est placé. *X* le
+bascule vers l'avant ou l'arrière (`\frx`), *Y* le fait pivoter vers la gauche ou la droite (`\fry`),
+*Z* le tourne à plat (`\frz`) et *Taille* l'agrandit ou le réduit. Sur la vidéo, Maj+molette le tourne
+et Alt+molette change sa taille. Le tracking part de cette pose et la fait évoluer avec l'objet.
+
+Une ligne déjà mise en perspective dans Aegisub garde ce réglage : ses `\frx`, `\fry`, `\frz`, `\fax`,
+`\org`, `\fscx` et `\fscy` servent de pose de départ, et les valeurs de l'onglet s'y ajoutent. C'est
+aussi le cas quand on n'exporte que le tracking.
 
 L'aperçu du texte est rendu par libass (via ffmpeg), y compris pendant la lecture. Il montre ce
 qu'Aegisub affichera, à la police près si le style n'est pas connu.
@@ -192,7 +206,10 @@ mais je doute que vous ayez envie d'un .ass de 1 Go et d'un Aegisub qui rame.
 | Espace ou Ctrl+Espace | Lecture, pause |
 | Ctrl+Z, Ctrl+Maj+Z | Annuler, rétablir |
 | H | Masquer ou revoir les tracés |
+| F ou Ctrl+0 | Remettre la vidéo entière dans la fenêtre |
 | Molette | Zoom |
+| Alt+molette | Agrandir ou réduire la sélection, le cache ou le texte, selon l'onglet ouvert |
+| Maj+molette | Les tourner |
 | Clic droit ou clic molette maintenu | Déplacer la vue |
 
 Les touches sont ignorées pendant la saisie dans un champ.
@@ -213,7 +230,8 @@ Les touches sont ignorées pendant la saisie dans un champ.
 | Le suivi se décale peu à peu | *Recaler sur la frame de départ* (coché par défaut, section Recherche) réaligne chaque frame sur celle où le tracking a commencé, ce qui empêche les petites erreurs de s'additionner. À décocher si l'objet change vraiment d'aspect en cours de route. *Affiner* fait le même recalage après coup sur les frames suivies de la plage, par exemple après avoir replacé la sélection à la main |
 | Une partie de la zone s'anime ou n'appartient pas à l'objet | *Zone à ignorer*, en mode *Zone* et avant de tracker : la partie entourée ne compte plus dans le suivi |
 | Le mouvement est parfaitement droit | Sous *Translation*, régler *Axe* sur *Horizontal* ou *Vertical* : le centre de l'objet reste figé sur l'autre axe, sans aucun tremblement, même quand l'objet est caché et sa trajectoire prolongée. Décocher aussi *Échelle* et *Rotation*. À réserver aux génériques qui défilent et aux panoramiques : si l'objet bouge aussi dans l'autre sens, le tracking sera faux |
-| Le plan change | Lancé depuis Aegisub, le tracker reçoit ses keyframes, affichées en traits blancs sur la timeline, et le tracking s'y arrête. Décocher *Options > S'arrêter aux changements de plan* pour le laisser traverser |
+| Le plan change | Lancé depuis Aegisub, le tracker reçoit ses keyframes et ne garde que celles où l'image change d'un coup. Elles apparaissent en traits blancs sur la timeline et le tracking s'y arrête. Une fenêtre propose alors *Continuer*, qui reprend au-delà du repère et l'efface, ou *Éditer le tracking*, qui va à la frame d'arrêt. Décocher *Options > S'arrêter aux changements de plan* pour tout traverser sans question |
+| L'objet reste perdu jusqu'au bout | Quand le tracking finit sur des frames estimées, une fenêtre *Objet perdu* donne la frame où il a décroché. *Éditer le tracking* y va pour corriger à la main et relancer de là, *Fermer* garde l'estimation, et *Ne plus afficher* fait taire cette fenêtre jusqu'à la fermeture du programme |
 | Le sign sort de l'image ou se fond avant la fin | Régler la plage sur les frames à couvrir, puis *Avancé > Extrapoler*. Les frames non suivies avant et après le tracking sont remplies en prolongeant son mouvement, et marquées en orange |
 
 ### Recouvrement
