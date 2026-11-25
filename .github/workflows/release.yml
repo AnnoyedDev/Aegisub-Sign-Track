@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        run: echo "AEGISIGNTRACK_VERSION=$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+
+      - name: Outils
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 zip
+          rustup update stable
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compilation Linux et Windows
+        run: |
+          cargo build --release
+          cargo build --release --target x86_64-pc-windows-gnu
+
+      - name: Archives
+        run: |
+          mkdir aegisigntrack
+          cp aegisub/aegisigntrack.lua README.md LICENSE aegisigntrack/
+          cp target/release/aegisigntrack aegisigntrack/
+          tar czf aegisigntrack-linux-x86_64.tar.gz aegisigntrack
+          rm aegisigntrack/aegisigntrack
+          cp target/x86_64-pc-windows-gnu/release/aegisigntrack.exe aegisigntrack/
+          zip -r aegisigntrack-windows-x86_64.zip aegisigntrack
+
+      - name: Publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "$AEGISIGNTRACK_VERSION" --cleanup-tag --yes || true
+          gh release create "$AEGISIGNTRACK_VERSION" --target "$GITHUB_SHA" --latest \
+            --title "AegiSignTrack $AEGISIGNTRACK_VERSION" --generate-notes \
+            aegisigntrack-linux-x86_64.tar.gz aegisigntrack-windows-x86_64.zip
